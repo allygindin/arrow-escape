@@ -24,8 +24,18 @@ from the internet.
 Each level is built backwards. Arrows are added one at a time, and each new
 arrow's straight path from its head to the edge must be empty when it's
 added. Removing the arrows in the reverse order therefore always works, so
-every board can be solved. Hard boards are picked from 40 candidates, keeping
-the one with the fewest arrows that can leave at the start.
+every board can be solved.
+
+| | Grid | How the board is chosen |
+| --- | --- | --- |
+| Easy | 6×6 | First board generated |
+| Medium | 8×8 | Best of 8: fewest arrows free at the start |
+| Hard | 10×10 | Best of 40: fewest arrows free at the start |
+| Expert | 12×12 | Best of 100: long, bendy arrows; scored on solving rounds and arrows free at the start |
+
+"Solving rounds" means removing every free arrow at once, over and over; more
+rounds means longer chains of arrows waiting on each other. The settings live
+at the top of `js/logic.js`.
 
 ## Run it on a computer
 

@@ -91,6 +91,7 @@ body { position: fixed; inset: 0; }
   font-family: inherit;
   touch-action: none; /* no pan, so a Pencil wobble never cancels the press */
 }
+@media (orientation: landscape) { .seg button { padding: 0 4px; font-size: 14px; } }
 .seg button[aria-pressed="true"] { background: var(--panel); color: var(--ink); box-shadow: var(--shadow); }
 
 .hud { display: flex; align-items: center; gap: 16px; min-width: 0; }

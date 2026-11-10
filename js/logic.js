@@ -8,13 +8,17 @@
 export const DIFFICULTIES = {
   // size: grid width; minLen/maxLen: cells per arrow; bend: chance of turning
   // at each cell; density: share of cells to fill; aim: preference for heads
-  // with long exit paths; candidates: boards generated, keeping the one with
-  // the fewest arrows free at the start.
+  // with long exit paths; headTries: empty cells compared when choosing each
+  // head; candidates: boards generated, keeping the hardest (fewest arrows
+  // free at the start, or with pick: 'mix', most solving rounds minus
+  // freeWeight x arrows free at the start).
   easy:   { label: 'Easy',   size: 6,  minLen: 2, maxLen: 4, bend: 0.2, density: 0.72, aim: 0.5, candidates: 1 },
   medium: { label: 'Medium', size: 8,  minLen: 2, maxLen: 6, bend: 0.4, density: 0.82, aim: 1.5, candidates: 8 },
   hard:   { label: 'Hard',   size: 10, minLen: 3, maxLen: 8, bend: 0.6, density: 0.9,  aim: 3,   candidates: 40 },
+  expert: { label: 'Expert', size: 12, minLen: 4, maxLen: 12, bend: 0.65, density: 0.92, aim: 5, headTries: 8,
+            candidates: 100, pick: 'mix', freeWeight: 2 },
 };
-export const DIFFICULTY_ORDER = ['easy', 'medium', 'hard'];
+export const DIFFICULTY_ORDER = ['easy', 'medium', 'hard', 'expert'];
 export const PALETTE_SIZE = 8;
 
 const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
@@ -87,14 +91,11 @@ export function scanExit(grid, size, cells) {
 // backwards from the head without touching filled cells or that exit path.
 // Because every earlier arrow stays clear of this one's exit path, removing
 // arrows in the reverse of placement order always works.
-function placeArrow(grid, size, minLen, maxLen, bend, aim, rng) {
-  const empties = [];
-  for (let i = 0; i < grid.length; i++) if (grid[i] < 0) empties.push(i);
-  if (!empties.length) return null;
-  const hi = empties[Math.floor(rng() * empties.length)];
-  const hx = hi % size, hy = (hi / size) | 0;
-
-  // Directions whose cell behind the head and whole exit path are empty.
+// Directions a head at (hx, hy) could point: the cell behind it and its whole
+// exit path must be empty. Long exit paths are likely to be crossed by later
+// arrows, which makes the board harder; `aim` sets how strongly they are
+// preferred. Returned in weighted random order.
+function headOptions(grid, size, hx, hy, aim, rng) {
   const options = [];
   for (const [dx, dy] of DIRS) {
     const bx = hx - dx, by = hy - dy; // the cell behind the head fixes its direction
@@ -103,11 +104,27 @@ function placeArrow(grid, size, minLen, maxLen, bend, aim, rng) {
     for (let x = hx + dx, y = hy + dy; inside(size, x, y); x += dx, y += dy, len++) {
       if (grid[y * size + x] >= 0) { clear = false; break; }
     }
-    // Long exit paths are likely to be crossed by later arrows, which makes the
-    // board harder. `aim` sets how strongly they are preferred.
-    if (clear) options.push({ dx, dy, bx, by, key: Math.pow(rng(), 1 / Math.pow(len + 1, aim)) });
+    if (clear) options.push({ dx, dy, bx, by, len, key: Math.pow(rng(), 1 / Math.pow(len + 1, aim)) });
   }
-  options.sort((a, b) => b.key - a.key); // weighted random order
+  return options.sort((a, b) => b.key - a.key);
+}
+
+function placeArrow(grid, size, p, minLen, rng) {
+  const { maxLen, bend, aim } = p;
+  const empties = [];
+  for (let i = 0; i < grid.length; i++) if (grid[i] < 0) empties.push(i);
+  if (!empties.length) return null;
+
+  // Look at `headTries` random empty cells and keep the one with the longest
+  // possible exit path (more chances for later arrows to block it).
+  let hi = -1, options = null, bestLen = -1;
+  for (let t = 0; t < (p.headTries || 1); t++) {
+    const i = empties[Math.floor(rng() * empties.length)];
+    const opts = headOptions(grid, size, i % size, (i / size) | 0, aim, rng);
+    const longest = opts.reduce((m, o) => Math.max(m, o.len), -1);
+    if (hi < 0 || longest > bestLen) { hi = i; options = opts; bestLen = longest; }
+  }
+  const hx = hi % size, hy = (hi / size) | 0;
 
   for (const { dx, dy, bx, by } of options) {
     const used = new Set([hi, by * size + bx]);
@@ -147,7 +164,7 @@ function buildCandidate(p, rng) {
   while (filled < goal && fails < 250) {
     // When the board gets crowded, allow short arrows to fill the gaps.
     const minLen = fails > 60 ? 2 : p.minLen;
-    const cells = placeArrow(grid, size, minLen, p.maxLen, p.bend, p.aim, rng);
+    const cells = placeArrow(grid, size, p, minLen, rng);
     if (!cells) { fails++; continue; }
     const id = placed.length;
     for (const [x, y] of cells) grid[y * size + x] = id;
@@ -197,18 +214,45 @@ export function countFree(level) {
   return n;
 }
 
+// How many rounds a solve takes if every free arrow is removed each round.
+// More rounds means longer chains of arrows waiting on other arrows.
+// Returns -1 if the board can't be cleared.
+export function solveDepth(level) {
+  const grid = buildGrid(level.size, level.arrows);
+  let left = level.arrows.map((a) => a.id);
+  let rounds = 0;
+  while (left.length) {
+    const free = left.filter((id) => scanExit(grid, level.size, level.arrows[id].cells).free);
+    if (!free.length) return -1;
+    for (const id of free) for (const [x, y] of level.arrows[id].cells) grid[y * level.size + x] = -1;
+    left = left.filter((id) => !free.includes(id));
+    rounds++;
+  }
+  return rounds;
+}
+
 export function generateLevel(difficulty = 'easy', seed = randomSeed()) {
   const p = DIFFICULTIES[difficulty];
   if (!p) throw new Error(`Unknown difficulty: ${difficulty}`);
   const rng = createRng(seed);
-  let best = null, bestFree = Infinity, bestFilled = -1;
+  // Score each candidate (higher is harder): fewer arrows free at the start,
+  // and with pick: 'mix', more solving rounds too.
+  const score = (arrows, filled) => {
+    const lv = { size: p.size, arrows };
+    const free = countFree(lv);
+    const mix = p.pick === 'mix' ? solveDepth(lv) - p.freeWeight * free : 0;
+    return [mix, -free, filled];
+  };
+  const beats = (a, b) => {
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] > b[i];
+    return false;
+  };
+  let best = null, bestScore = null;
   for (let c = 0; c < p.candidates; c++) {
     const cand = buildCandidate(p, rng);
     const arrows = cand.placed.map((cells, id) => ({ id, cells, color: 0 }));
-    const free = countFree({ size: p.size, arrows });
-    if (free < bestFree || (free === bestFree && cand.filled > bestFilled)) {
-      best = arrows; bestFree = free; bestFilled = cand.filled;
-    }
+    const sc = score(arrows, cand.filled);
+    if (!best || beats(sc, bestScore)) { best = arrows; bestScore = sc; }
   }
   const colors = assignColors(best.map((a) => a.cells), p.size, rng);
   best.forEach((a, i) => { a.color = colors[i]; });
