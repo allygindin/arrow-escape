@@ -1,7 +1,7 @@
 // Offline support: saves every file the game needs on install, then serves
 // saved copies first. To release an update, change CACHE_VERSION; the new
 // worker installs the new files and deletes the old copies.
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const CACHE_NAME = `arrow-escape-${CACHE_VERSION}`;
 
 // Every file the game loads. Add new files here.

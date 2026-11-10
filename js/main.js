@@ -176,11 +176,6 @@ function showLose() {
     </div>`);
 }
 
-overlay.addEventListener('click', (e) => {
-  const b = e.target.closest('button[data-act]');
-  if (!b) return;
-  if (b.dataset.act === 'retry') retry(); else newLevel();
-});
 
 // ---------------------------------------------------------------- input
 
@@ -207,10 +202,39 @@ canvas.addEventListener('pointermove', (e) => {
 });
 canvas.addEventListener('pointerleave', () => renderer.setHover(-1));
 
-$('#hint').addEventListener('click', useHint);
-$('#new').addEventListener('click', () => newLevel());
-document.querySelectorAll('.seg button').forEach((b) => {
-  b.addEventListener('click', () => newLevel(b.dataset.diff));
+// Buttons. They act on pointerup rather than click: Safari can drop the click
+// for an Apple Pencil tap (the Pencil reports tiny movements, and touchmove is
+// cancelled below to stop scrolling), but pointer events always arrive.
+// click is still handled for keyboards, skipped right after a pointer press.
+function pressButton(b) {
+  if (b.id === 'hint') useHint();
+  else if (b.id === 'new') newLevel();
+  else if (b.id === 'reload') location.reload();
+  else if (b.dataset.diff) newLevel(b.dataset.diff);
+  else if (b.dataset.act === 'retry') retry();
+  else if (b.dataset.act === 'new') newLevel();
+}
+
+const BUTTONS = '#hint, #new, #reload, .seg button, #overlay button[data-act]';
+let pressed = null, lastPress = 0;
+document.addEventListener('pointerdown', (e) => {
+  pressed = e.target.closest ? e.target.closest(BUTTONS) : null;
+});
+document.addEventListener('pointerup', (e) => {
+  const start = pressed;
+  pressed = null;
+  if (!start || start.disabled) return;
+  // Only if the press ends on the button it started on.
+  const under = document.elementFromPoint(e.clientX, e.clientY);
+  if (!under || under.closest(BUTTONS) !== start) return;
+  lastPress = performance.now();
+  pressButton(start);
+});
+document.addEventListener('pointercancel', () => { pressed = null; });
+document.addEventListener('click', (e) => {
+  const b = e.target.closest ? e.target.closest(BUTTONS) : null;
+  if (!b || b.disabled || performance.now() - lastPress < 800) return;
+  pressButton(b);
 });
 
 // No scrolling, pinch zoom, double-tap zoom or callouts on the game screen.
@@ -241,7 +265,6 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
   // A new release took over: offer a reload instead of interrupting the game.
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) $('#toast').hidden = false; });
 }
-$('#reload').addEventListener('click', () => location.reload());
 
 renderer.resize();
 newLevel(store.difficulty);
