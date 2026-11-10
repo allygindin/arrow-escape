@@ -14,7 +14,7 @@ from the internet.
 | `index.html`, `css/style.css` | The page and its layout (portrait and landscape) |
 | `js/logic.js` | Level generator, rules and solver. No drawing code |
 | `js/render.js` | Canvas drawing and animations |
-| `js/main.js` | Taps, Apple Pencil hover, hints, timer, saved stats |
+| `js/main.js` | Taps, pinch zoom, Apple Pencil hover, hints, timer, saved stats |
 | `sw.js` | Offline support (saves every file the game needs) |
 | `manifest.json`, `icons/` | Home Screen app name and icons |
 | `test.html` | Generates hundreds of levels per difficulty and checks each one is solvable |
@@ -28,10 +28,11 @@ every board can be solved.
 
 | | Grid | How the board is chosen |
 | --- | --- | --- |
-| Easy | 6×6 | First board generated |
-| Medium | 8×8 | Best of 8: fewest arrows free at the start |
-| Hard | 10×10 | Best of 40: fewest arrows free at the start |
-| Expert | 12×12 | Best of 100: long, bendy arrows; scored on solving rounds and arrows free at the start |
+| Easy | 10×10 | Best of 40: fewest arrows free at the start |
+| Medium | 12×12 | Best of 100: long, bendy arrows; scored on solving rounds and arrows free at the start |
+| Hard | 16×16 | Best of 150, about 35 arrows; scored the same way |
+| Expert | 22×22 | Best of 80, about 47 arrows; scored the same way |
+| Master | 26×26 | Best of 60, about 67 arrows; scored the same way |
 
 "Solving rounds" means removing every free arrow at once, over and over; more
 rounds means longer chains of arrows waiting on each other. The settings live

@@ -56,7 +56,8 @@ export class Renderer {
     this.hint = -1;
     this.hintStart = 0;
     this.w = 0; this.h = 0; this.dpr = 1;
-    this.cell = 0; this.ox = 0; this.oy = 0;
+    this.cell = 0; this.fitCell = 0; this.ox = 0; this.oy = 0;
+    this.onView = null; // called when the zoom level changes
     this.raf = 0;
     this.darkQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
     if (this.darkQuery && this.darkQuery.addEventListener) {
@@ -84,28 +85,76 @@ export class Renderer {
         t: 0, alpha: 1, flash: 0, shake: null, anim: null, gone: false,
       });
     }
-    this.layout();
-    this.requestDraw();
+    this.resetView();
   }
 
   resize() {
     const r = this.canvas.getBoundingClientRect();
-    this.dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    if (r.width === this.w && r.height === this.h && dpr === this.dpr && this.cell > 0) return;
+    this.dpr = dpr;
     this.w = r.width; this.h = r.height;
     this.canvas.width = Math.max(1, Math.round(r.width * this.dpr));
     this.canvas.height = Math.max(1, Math.round(r.height * this.dpr));
-    this.layout();
-    this.requestDraw();
+    this.resetView();
   }
 
+  // Fits the whole board on screen (zoom 1).
   layout() {
     if (!this.game) return;
     const pad = Math.max(16, Math.min(this.w, this.h) * 0.03);
     // The board's rounded backing extends 0.2 cells past the grid on each side.
-    this.cell = Math.max(0, Math.min(this.w, this.h) - pad * 2) / (this.game.size + 0.4);
+    this.fitCell = Math.max(0, Math.min(this.w, this.h) - pad * 2) / (this.game.size + 0.4);
+    this.cell = this.fitCell;
     const side = this.cell * this.game.size;
     this.ox = (this.w - side) / 2;
     this.oy = (this.h - side) / 2;
+  }
+
+  // ---------------------------------------------------------------- zoom
+
+  get zoom() { return this.fitCell > 0 ? this.cell / this.fitCell : 1; }
+  get maxZoom() { return Math.max(2, 110 / Math.max(1, this.fitCell)); }
+  get zoomed() { return this.zoom > 1.001; }
+
+  // Scales the board by `factor` around screen point (sx, sy), relative to the canvas.
+  zoomAt(factor, sx, sy) {
+    if (!this.game || this.fitCell <= 0) return;
+    const next = Math.max(this.fitCell, Math.min(this.fitCell * this.maxZoom, this.cell * factor));
+    const k = next / this.cell;
+    this.ox = sx - (sx - this.ox) * k;
+    this.oy = sy - (sy - this.oy) * k;
+    this.cell = next;
+    this.clampView();
+    this.requestDraw();
+    if (this.onView) this.onView();
+  }
+
+  zoomBy(factor) { this.zoomAt(factor, this.w / 2, this.h / 2); }
+
+  panBy(dx, dy) {
+    this.ox += dx; this.oy += dy;
+    this.clampView();
+    this.requestDraw();
+  }
+
+  resetView() {
+    this.layout();
+    this.requestDraw();
+    if (this.onView) this.onView();
+  }
+
+  // Keeps the board on screen: a board smaller than the view stays centered;
+  // a bigger one can't be dragged past its own edge.
+  clampView() {
+    const m = this.cell * 0.2, pad = 12;
+    const side = this.cell * this.game.size;
+    const fit = (o, view) => {
+      if (side + 2 * m <= view) return (view - side) / 2;
+      return Math.min(m + pad, Math.max(view - side - m - pad, o));
+    };
+    this.ox = fit(this.ox, this.w);
+    this.oy = fit(this.oy, this.h);
   }
 
   isAnimating(id) {

@@ -15,6 +15,14 @@ function loadStore() {
   let s = null;
   try { s = JSON.parse(localStorage.getItem(STORE_KEY)); } catch (e) { s = null; }
   if (!s || typeof s !== 'object') s = {};
+  // Version 2 made every level harder: the old Hard boards are now Easy and
+  // the old Expert boards are now Medium, so their stats move down with them.
+  if (s.version !== 2) {
+    const old = s.stats || {};
+    s.stats = { easy: old.hard, medium: old.expert };
+    s.difficulty = { hard: 'easy', expert: 'medium' }[s.difficulty] || 'easy';
+    s.version = 2;
+  }
   if (!DIFFICULTIES[s.difficulty]) s.difficulty = 'easy';
   if (!s.stats || typeof s.stats !== 'object') s.stats = {};
   for (const d of DIFFICULTY_ORDER) {
@@ -179,20 +187,81 @@ function showLose() {
 
 // ---------------------------------------------------------------- input
 
-let down = null;
+// One finger or the Pencil: tap an arrow, or drag to move a zoomed-in board.
+// Two fingers: pinch to zoom (and move). A press that turns into a drag or a
+// pinch never counts as a tap.
+const pointers = new Map(); // pointerId -> { x, y } (canvas coordinates)
+let down = null;            // the press that may still become a tap
+let pinch = null;           // { dist, mx, my } while two fingers are down
+
+const local = (e) => {
+  const r = canvas.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+};
+const pinchState = () => {
+  const [a, b] = [...pointers.values()];
+  return { dist: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+};
+
 canvas.addEventListener('pointerdown', (e) => {
-  if (!game || game.status !== 'playing') return;
+  if (!game) return;
   e.preventDefault();
-  down = { pointer: e.pointerId, x: e.clientX, y: e.clientY, arrow: renderer.hitTest(e.clientX, e.clientY) };
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* not supported */ }
+  pointers.set(e.pointerId, local(e));
+  if (pointers.size === 1) {
+    down = { pointer: e.pointerId, x: e.clientX, y: e.clientY, panning: false,
+             arrow: game.status === 'playing' ? renderer.hitTest(e.clientX, e.clientY) : -1 };
+  } else {
+    down = null;
+    if (pointers.size === 2) pinch = pinchState();
+  }
 });
-canvas.addEventListener('pointerup', (e) => {
-  if (!down || down.pointer !== e.pointerId) return;
+
+canvas.addEventListener('pointermove', (e) => {
+  const prev = pointers.get(e.pointerId);
+  if (!prev) return;
+  const now = local(e);
+  pointers.set(e.pointerId, now);
+  if (pointers.size >= 2 && pinch) {
+    const p = pinchState();
+    if (pinch.dist > 0) renderer.zoomAt(p.dist / pinch.dist, p.mx, p.my);
+    renderer.panBy(p.mx - pinch.mx, p.my - pinch.my);
+    pinch = p;
+  } else if (pointers.size === 1) {
+    if (down && !down.panning && renderer.zoomed && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 12) {
+      down.panning = true;
+    }
+    if (!down || down.panning) renderer.panBy(now.x - prev.x, now.y - prev.y);
+  }
+});
+
+function release(e, cancelled) {
+  if (!pointers.delete(e.pointerId)) return;
+  if (pointers.size < 2) pinch = null;
   const d = down;
+  if (!d || d.pointer !== e.pointerId) return;
   down = null;
+  if (cancelled || d.panning) return;
   if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > Math.max(24, renderer.cell * 0.6)) return; // a drag, not a tap
   if (d.arrow >= 0) play(d.arrow);
-});
-canvas.addEventListener('pointercancel', () => { down = null; });
+}
+canvas.addEventListener('pointerup', (e) => release(e, false));
+canvas.addEventListener('pointercancel', (e) => release(e, true));
+
+// Trackpad pinch (ctrl + wheel) zooms, plain scrolling moves the board.
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const p = local(e);
+  if (e.ctrlKey) renderer.zoomAt(Math.exp(-e.deltaY * 0.01), p.x, p.y);
+  else renderer.panBy(-e.deltaX, -e.deltaY);
+}, { passive: false });
+
+function updateZoomButtons() {
+  $('#zoom-in').disabled = renderer.zoom >= renderer.maxZoom - 0.001;
+  $('#zoom-out').disabled = !renderer.zoomed;
+  $('#zoom-fit').disabled = !renderer.zoomed;
+}
+renderer.onView = updateZoomButtons;
 
 // Apple Pencil hover (and mouse, for testing on a computer): highlight + exit preview.
 canvas.addEventListener('pointermove', (e) => {
@@ -210,12 +279,15 @@ function pressButton(b) {
   if (b.id === 'hint') useHint();
   else if (b.id === 'new') newLevel();
   else if (b.id === 'reload') location.reload();
+  else if (b.id === 'zoom-in') renderer.zoomBy(1.5);
+  else if (b.id === 'zoom-out') renderer.zoomBy(1 / 1.5);
+  else if (b.id === 'zoom-fit') renderer.resetView();
   else if (b.dataset.diff) newLevel(b.dataset.diff);
   else if (b.dataset.act === 'retry') retry();
   else if (b.dataset.act === 'new') newLevel();
 }
 
-const BUTTONS = '#hint, #new, #reload, .seg button, #overlay button[data-act]';
+const BUTTONS = '#hint, #new, #reload, .zoom button, .seg button, #overlay button[data-act]';
 let pressed = null, lastPress = 0;
 document.addEventListener('pointerdown', (e) => {
   pressed = e.target.closest ? e.target.closest(BUTTONS) : null;

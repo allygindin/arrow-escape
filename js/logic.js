@@ -12,13 +12,17 @@ export const DIFFICULTIES = {
   // head; candidates: boards generated, keeping the hardest (fewest arrows
   // free at the start, or with pick: 'mix', most solving rounds minus
   // freeWeight x arrows free at the start).
-  easy:   { label: 'Easy',   size: 6,  minLen: 2, maxLen: 4, bend: 0.2, density: 0.72, aim: 0.5, candidates: 1 },
-  medium: { label: 'Medium', size: 8,  minLen: 2, maxLen: 6, bend: 0.4, density: 0.82, aim: 1.5, candidates: 8 },
-  hard:   { label: 'Hard',   size: 10, minLen: 3, maxLen: 8, bend: 0.6, density: 0.9,  aim: 3,   candidates: 40 },
-  expert: { label: 'Expert', size: 12, minLen: 4, maxLen: 12, bend: 0.65, density: 0.92, aim: 5, headTries: 8,
+  easy:   { label: 'Easy',   size: 10, minLen: 3, maxLen: 8,  bend: 0.6,  density: 0.9,  aim: 3, candidates: 40 },
+  medium: { label: 'Medium', size: 12, minLen: 4, maxLen: 12, bend: 0.65, density: 0.92, aim: 5, headTries: 8,
             candidates: 100, pick: 'mix', freeWeight: 2 },
+  hard:   { label: 'Hard',   size: 16, minLen: 3, maxLen: 10, bend: 0.65, density: 0.95, aim: 8, headTries: 20,
+            candidates: 150, pick: 'mix', freeWeight: 1 },
+  expert: { label: 'Expert', size: 22, minLen: 4, maxLen: 16, bend: 0.7,  density: 0.95, aim: 8, headTries: 24,
+            candidates: 80, pick: 'mix', freeWeight: 1 },
+  master: { label: 'Master', size: 26, minLen: 4, maxLen: 14, bend: 0.75, density: 0.96, aim: 10, headTries: 32,
+            candidates: 60, pick: 'mix', freeWeight: 1 },
 };
-export const DIFFICULTY_ORDER = ['easy', 'medium', 'hard', 'expert'];
+export const DIFFICULTY_ORDER = ['easy', 'medium', 'hard', 'expert', 'master'];
 export const PALETTE_SIZE = 8;
 
 const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
