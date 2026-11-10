@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Arrow Escape Tests</title>
+  <style>
+    :root { color-scheme: light dark; --ok: #2f9e44; --bad: #e03131; }
+    body { margin: 0; padding: 24px 16px; font: 15px/1.45 -apple-system, system-ui, sans-serif; background: Canvas; color: CanvasText; }
+    main { max-width: 980px; margin: 0 auto; }
+    h1 { margin: 0 0 4px; font-size: 24px; }
+    p { margin: 0 0 16px; opacity: 0.8; }
+    .controls { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+    input { width: 90px; font: inherit; padding: 6px 8px; }
+    button { font: inherit; padding: 6px 14px; }
+    .wrap { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, CanvasText 15%, transparent); text-align: right; white-space: nowrap; }
+    th:first-child, td:first-child { text-align: left; }
+    .ok { color: var(--ok); font-weight: 600; }
+    .bad { color: var(--bad); font-weight: 600; }
+    #summary { margin: 16px 0; font-size: 18px; font-weight: 700; }
+    pre { white-space: pre-wrap; font-size: 13px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Arrow Escape: level tests</h1>
+  <p>Generates many levels per difficulty and checks that each is well-formed, solvable, and that its built-in solution clears the board with no mistakes.</p>
+  <div class="controls">
+    <label>Levels per difficulty <input id="count" type="number" min="1" value="500"></label>
+    <button id="run" type="button">Run again</button>
+  </div>
+  <div id="summary" data-status="running">Running…</div>
+  <div class="wrap">
+    <table>
+      <thead><tr>
+        <th>Difficulty</th><th>Levels</th><th>Valid</th><th>Solvable</th><th>Solution replays</th><th>Same seed, same board</th>
+        <th>Arrows avg (min–max)</th><th>Board filled</th><th>Free at start avg (min–max)</th><th>ms / level</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <h2>Rule checks</h2>
+  <div id="units"></div>
+  <pre id="failures"></pre>
+</main>
+
+<script type="module">
+import { DIFFICULTIES, DIFFICULTY_ORDER, Game, countFree, generateLevel, solve, validateLevel } from './js/logic.js';
+
+const $ = (s) => document.querySelector(s);
+const failures = [];
+const fail = (msg) => { if (failures.length < 50) failures.push(msg); };
+
+function unitTests() {
+  const out = [];
+  const check = (name, ok) => { out.push({ name, ok }); if (!ok) fail(`rule check failed: ${name}`); };
+
+  // Two arrows pointing at each other in one column: neither can ever leave.
+  const deadlock = { size: 4, arrows: [
+    { id: 0, cells: [[0, 0], [0, 1]], color: 0 }, // head (0,1) points down
+    { id: 1, cells: [[0, 3], [0, 2]], color: 1 }, // head (0,2) points up
+  ] };
+  check('Solver rejects an unsolvable board', solve(deadlock) === null);
+  const g = new Game(deadlock);
+  const r = g.tap(0);
+  check('Blocked tap bumps, costs a heart and names the blocker', r.type === 'bump' && r.blocker === 1 && r.steps === 0 && g.hearts === 2);
+  g.tap(0); g.tap(1);
+  check('Three mistakes lose the level', g.status === 'lost' && g.hearts === 0 && g.mistakes === 3);
+  check('Taps after losing are ignored', g.tap(0) === null);
+
+  // A blocked arrow becomes free once its blocker leaves.
+  const chain = { size: 4, arrows: [
+    { id: 0, cells: [[0, 1], [1, 1]], color: 0 }, // points right, blocked by arrow 1
+    { id: 1, cells: [[3, 2], [3, 1]], color: 1 }, // points up, free
+  ] };
+  const c = new Game(chain);
+  const b = c.tap(0);
+  check('Bump reports empty cells before the blocker', b.type === 'bump' && b.steps === 1);
+  check('Hint picks an arrow that can exit', c.hint() === 1 && c.hints === 2 && c.hintsUsed === 1);
+  check('Free arrow exits', c.tap(1).type === 'exit');
+  check('Removing a blocker frees the arrow behind it', c.tap(0).type === 'exit' && c.status === 'won');
+  check('Solver finds the order on a solvable board', JSON.stringify(solve(chain)) === '[1,0]');
+
+  $('#units').innerHTML = out.map((t) => `<div class="${t.ok ? 'ok' : 'bad'}">${t.ok ? '✓' : '✗'} ${t.name}</div>`).join('');
+  return out.every((t) => t.ok);
+}
+
+function testDifficulty(diff, n, baseSeed) {
+  const s = { levels: n, valid: 0, solvable: 0, replays: 0, deterministic: 0, detChecked: 0,
+    arrows: [], fill: 0, free: [], ms: 0 };
+  const cells = DIFFICULTIES[diff].size ** 2;
+  for (let i = 0; i < n; i++) {
+    const seed = (baseSeed + i * 2654435761) >>> 0;
+    const t0 = performance.now();
+    const level = generateLevel(diff, seed);
+    s.ms += performance.now() - t0;
+
+    const errs = validateLevel(level);
+    if (errs.length) fail(`${diff} seed ${seed}: ${errs.join('; ')}`); else s.valid++;
+
+    if (solve(level)) s.solvable++; else fail(`${diff} seed ${seed}: solver found no solution`);
+
+    const g = new Game(level);
+    let ok = true;
+    for (const id of level.solution) {
+      const r = g.tap(id);
+      if (!r || r.type !== 'exit') { ok = false; break; }
+    }
+    if (ok && g.status === 'won' && g.hearts === g.maxHearts) s.replays++;
+    else fail(`${diff} seed ${seed}: built-in solution did not clear the board cleanly`);
+
+    if (i < 25) {
+      s.detChecked++;
+      if (JSON.stringify(generateLevel(diff, seed)) === JSON.stringify(level)) s.deterministic++;
+      else fail(`${diff} seed ${seed}: same seed gave a different board`);
+    }
+
+    s.arrows.push(level.arrows.length);
+    s.fill += level.arrows.reduce((sum, a) => sum + a.cells.length, 0) / cells;
+    s.free.push(countFree(level));
+  }
+  return s;
+}
+
+const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+const cell = (got, of) => `<td class="${got === of ? 'ok' : 'bad'}">${got}/${of}</td>`;
+
+function run() {
+  failures.length = 0;
+  $('#summary').textContent = 'Running…';
+  $('#summary').dataset.status = 'running';
+  $('#rows').innerHTML = '';
+  const n = Math.max(1, parseInt($('#count').value, 10) || 500);
+  // Let the page paint "Running…" first.
+  setTimeout(() => {
+    const unitsOk = unitTests();
+    let allOk = unitsOk, total = 0;
+    for (const diff of DIFFICULTY_ORDER) {
+      const s = testDifficulty(diff, n, 12345 + diff.length);
+      total += n;
+      const ok = s.valid === n && s.solvable === n && s.replays === n && s.deterministic === s.detChecked;
+      allOk = allOk && ok;
+      $('#rows').insertAdjacentHTML('beforeend', `<tr>
+        <td>${DIFFICULTIES[diff].label} (${DIFFICULTIES[diff].size}×${DIFFICULTIES[diff].size})</td><td>${n}</td>
+        ${cell(s.valid, n)}${cell(s.solvable, n)}${cell(s.replays, n)}${cell(s.deterministic, s.detChecked)}
+        <td>${avg(s.arrows).toFixed(1)} (${Math.min(...s.arrows)}–${Math.max(...s.arrows)})</td>
+        <td>${Math.round((s.fill / n) * 100)}%</td>
+        <td>${avg(s.free).toFixed(1)} (${Math.min(...s.free)}–${Math.max(...s.free)})</td>
+        <td>${(s.ms / n).toFixed(2)}</td></tr>`);
+    }
+    $('#summary').textContent = allOk ? `PASS: all ${total} levels solvable, all rule checks passed` : `FAIL: see problems below`;
+    $('#summary').className = allOk ? 'ok' : 'bad';
+    $('#summary').dataset.status = allOk ? 'pass' : 'fail';
+    $('#failures').textContent = failures.join('\n');
+  }, 30);
+}
+
+$('#run').addEventListener('click', run);
+run();
+</script>
+</body>
+</html>

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Arrow Escape</title>
+  <meta name="description" content="Tap the arrows so each one slides off the board. Clear them all.">
+  <meta name="theme-color" content="#F6F1EA" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#14161C" media="(prefers-color-scheme: dark)">
+
+  <!-- Home Screen app: full screen, no Safari bars -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Arrows">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="icons/apple-touch-icon-152.png">
+  <link rel="apple-touch-icon" sizes="167x167" href="icons/apple-touch-icon-167.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+
+  <link rel="stylesheet" href="css/style.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header class="bar">
+      <h1 class="brand">Arrow Escape</h1>
+
+      <div class="seg" role="group" aria-label="Difficulty">
+        <button type="button" data-diff="easy">Easy</button>
+        <button type="button" data-diff="medium">Medium</button>
+        <button type="button" data-diff="hard">Hard</button>
+      </div>
+
+      <div class="hud">
+        <div id="hearts" class="hearts" role="img"></div>
+        <div class="info"><span id="left"></span><span aria-hidden="true">·</span><span id="timer">0:00</span></div>
+      </div>
+
+      <div class="actions">
+        <button type="button" id="hint" class="btn">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21h6M10 18h4M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1 2V16h5.2v-.2c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/></svg>
+          Hint <span id="hint-count" class="badge">3</span>
+        </button>
+        <button type="button" id="new" class="btn">New level</button>
+      </div>
+    </header>
+
+    <main class="stage">
+      <canvas id="board" aria-label="Game board. Tap an arrow to slide it off the board."></canvas>
+    </main>
+  </div>
+
+  <div id="overlay" class="overlay" hidden>
+    <div id="card" class="card" role="dialog" aria-modal="true"></div>
+  </div>
+
+  <div id="toast" class="toast" hidden>
+    New version ready <button type="button" id="reload" class="btn primary">Reload</button>
+  </div>
+
+  <noscript>Arrow Escape needs JavaScript.</noscript>
+</body>
+</html>
