@@ -8,27 +8,29 @@ const renderer = new Renderer(canvas);
 
 // ---------------------------------------------------------------- storage
 
-const STORE_KEY = 'arrow-escape:v1';
+// The cube game keeps its own stats; the flat game's are left alone under 'arrow-escape:v1'.
+const STORE_KEY = 'arrow-escape:cube:v1';
 const store = loadStore();
 
 function loadStore() {
   let s = null;
   try { s = JSON.parse(localStorage.getItem(STORE_KEY)); } catch (e) { s = null; }
   if (!s || typeof s !== 'object') s = {};
-  // Version 2 made every level harder: the old Hard boards are now Easy and
-  // the old Expert boards are now Medium, so their stats move down with them.
-  if (s.version !== 2) {
-    const old = s.stats || {};
-    s.stats = { easy: old.hard, medium: old.expert };
-    s.difficulty = { hard: 'easy', expert: 'medium' }[s.difficulty] || 'easy';
-    s.version = 2;
-  }
-  if (!DIFFICULTIES[s.difficulty]) s.difficulty = 'easy';
+  if (!DIFFICULTIES[s.difficulty]) s.difficulty = oldDifficulty();
   if (!s.stats || typeof s.stats !== 'object') s.stats = {};
   for (const d of DIFFICULTY_ORDER) {
     s.stats[d] = Object.assign({ played: 0, won: 0, bestMs: null, streak: 0, bestStreak: 0 }, s.stats[d]);
   }
   return s;
+}
+
+// Start on the difficulty last played in the flat game.
+function oldDifficulty() {
+  try {
+    const d = JSON.parse(localStorage.getItem('arrow-escape:v1')).difficulty;
+    if (DIFFICULTIES[d]) return d;
+  } catch (e) { /* nothing saved */ }
+  return 'easy';
 }
 
 function saveStore() {
@@ -163,7 +165,7 @@ function showWin() {
   const r = lastResult || { ms: elapsed(), newBest: false };
   showOverlay(`
     <p class="kicker">${DIFFICULTIES[store.difficulty].label}</p>
-    <h2>Board cleared!</h2>
+    <h2>Cube cleared!</h2>
     <div class="stats">
       <div><b>${game.mistakes}</b><span>${game.mistakes === 1 ? 'Mistake' : 'Mistakes'}</span></div>
       <div><b>${game.hintsUsed}</b><span>Hints used</span></div>
@@ -177,7 +179,7 @@ function showLose() {
   showOverlay(`
     <p class="kicker">${DIFFICULTIES[store.difficulty].label}</p>
     <h2>Out of hearts</h2>
-    <p class="sub">${game.remaining} ${game.remaining === 1 ? 'arrow' : 'arrows'} left on the board.</p>
+    <p class="sub">${game.remaining} ${game.remaining === 1 ? 'arrow' : 'arrows'} left on the cube.</p>
     <div class="buttons">
       <button class="btn primary" data-act="retry">Try again</button>
       <button class="btn" data-act="new">New level</button>
@@ -187,12 +189,12 @@ function showLose() {
 
 // ---------------------------------------------------------------- input
 
-// One finger or the Pencil: tap an arrow, or drag to move a zoomed-in board.
-// Two fingers: pinch to zoom (and move). A press that turns into a drag or a
-// pinch never counts as a tap.
+// One finger or the Pencil: tap an arrow, or drag to spin the cube.
+// Two fingers: pinch to zoom, move to pan, twist to turn the cube. A press
+// that turns into a drag or a pinch never counts as a tap.
 const pointers = new Map(); // pointerId -> { x, y } (canvas coordinates)
 let down = null;            // the press that may still become a tap
-let pinch = null;           // { dist, mx, my } while two fingers are down
+let pinch = null;           // { dist, angle, mx, my } while two fingers are down
 
 const local = (e) => {
   const r = canvas.getBoundingClientRect();
@@ -200,7 +202,8 @@ const local = (e) => {
 };
 const pinchState = () => {
   const [a, b] = [...pointers.values()];
-  return { dist: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+  return { dist: Math.hypot(a.x - b.x, a.y - b.y), angle: Math.atan2(b.y - a.y, b.x - a.x),
+           mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
 };
 
 canvas.addEventListener('pointerdown', (e) => {
@@ -209,7 +212,7 @@ canvas.addEventListener('pointerdown', (e) => {
   try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* not supported */ }
   pointers.set(e.pointerId, local(e));
   if (pointers.size === 1) {
-    down = { pointer: e.pointerId, x: e.clientX, y: e.clientY, panning: false,
+    down = { pointer: e.pointerId, x: e.clientX, y: e.clientY, dragging: false,
              arrow: game.status === 'playing' ? renderer.hitTest(e.clientX, e.clientY) : -1 };
   } else {
     down = null;
@@ -226,12 +229,18 @@ canvas.addEventListener('pointermove', (e) => {
     const p = pinchState();
     if (pinch.dist > 0) renderer.zoomAt(p.dist / pinch.dist, p.mx, p.my);
     renderer.panBy(p.mx - pinch.mx, p.my - pinch.my);
+    let turn = p.angle - pinch.angle;
+    if (turn > Math.PI) turn -= 2 * Math.PI; else if (turn < -Math.PI) turn += 2 * Math.PI;
+    renderer.rollBy(turn);
     pinch = p;
   } else if (pointers.size === 1) {
-    if (down && !down.panning && renderer.zoomed && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 12) {
-      down.panning = true;
+    // A small wobble still counts as a tap; past that, it's a spin.
+    if (down && !down.dragging && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 10) {
+      down.dragging = true;
+      renderer.rotateBy(e.clientX - down.x, e.clientY - down.y);
+      return;
     }
-    if (!down || down.panning) renderer.panBy(now.x - prev.x, now.y - prev.y);
+    if (!down || down.dragging) renderer.rotateBy(now.x - prev.x, now.y - prev.y);
   }
 });
 
@@ -241,19 +250,18 @@ function release(e, cancelled) {
   const d = down;
   if (!d || d.pointer !== e.pointerId) return;
   down = null;
-  if (cancelled || d.panning) return;
-  if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > Math.max(24, renderer.cell * 0.6)) return; // a drag, not a tap
+  if (cancelled || d.dragging) return;
   if (d.arrow >= 0) play(d.arrow);
 }
 canvas.addEventListener('pointerup', (e) => release(e, false));
 canvas.addEventListener('pointercancel', (e) => release(e, true));
 
-// Trackpad pinch (ctrl + wheel) zooms, plain scrolling moves the board.
+// Trackpad pinch (ctrl + wheel) zooms, plain scrolling spins the cube.
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   const p = local(e);
   if (e.ctrlKey) renderer.zoomAt(Math.exp(-e.deltaY * 0.01), p.x, p.y);
-  else renderer.panBy(-e.deltaX, -e.deltaY);
+  else renderer.rotateBy(-e.deltaX, -e.deltaY);
 }, { passive: false });
 
 function updateZoomButtons() {

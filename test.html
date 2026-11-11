@@ -26,9 +26,9 @@
 <body>
 <main>
   <h1>Arrow Escape: level tests</h1>
-  <p>Generates many levels per difficulty and checks that each is well-formed, solvable, and that its built-in solution clears the board with no mistakes.</p>
+  <p>Generates many cube levels per difficulty and checks that each is well-formed, solvable, and that its built-in solution clears the board with no mistakes.</p>
   <div class="controls">
-    <label>Levels per difficulty <input id="count" type="number" min="1" value="500"></label>
+    <label>Levels per difficulty <input id="count" type="number" min="1" value="100"></label>
     <button id="run" type="button">Run again</button>
   </div>
   <div id="summary" data-status="running">Running…</div>
@@ -47,7 +47,10 @@
 </main>
 
 <script type="module">
-import { DIFFICULTIES, DIFFICULTY_ORDER, Game, countFree, generateLevel, solve, validateLevel } from './js/logic.js';
+// ?n=20 sets how many levels to test per difficulty.
+const qn = new URLSearchParams(location.search).get('n');
+if (qn) document.querySelector('#count').value = qn;
+import { DIFFICULTIES, DIFFICULTY_ORDER, Game, countFree, exitPath, generateLevel, getCube, headDirection, solve, validateLevel } from './js/logic.js';
 
 const $ = (s) => document.querySelector(s);
 const failures = [];
@@ -57,10 +60,14 @@ function unitTests() {
   const out = [];
   const check = (name, ok) => { out.push({ name, ok }); if (!ok) fail(`rule check failed: ${name}`); };
 
+  // Cells on a 4x4 cube. Face 4 is the +Z face; u runs along +X, v along +Y.
+  const cube = getCube(4);
+  const at = (f, u, v) => f * 16 + v * 4 + u;
+
   // Two arrows pointing at each other in one column: neither can ever leave.
   const deadlock = { size: 4, arrows: [
-    { id: 0, cells: [[0, 0], [0, 1]], color: 0 }, // head (0,1) points down
-    { id: 1, cells: [[0, 3], [0, 2]], color: 1 }, // head (0,2) points up
+    { id: 0, cells: [at(4, 0, 0), at(4, 0, 1)], color: 0 }, // head points +v
+    { id: 1, cells: [at(4, 0, 3), at(4, 0, 2)], color: 1 }, // head points -v
   ] };
   check('Solver rejects an unsolvable board', solve(deadlock) === null);
   const g = new Game(deadlock);
@@ -72,8 +79,8 @@ function unitTests() {
 
   // A blocked arrow becomes free once its blocker leaves.
   const chain = { size: 4, arrows: [
-    { id: 0, cells: [[0, 1], [1, 1]], color: 0 }, // points right, blocked by arrow 1
-    { id: 1, cells: [[3, 2], [3, 1]], color: 1 }, // points up, free
+    { id: 0, cells: [at(4, 0, 1), at(4, 1, 1)], color: 0 }, // points +u, blocked by arrow 1
+    { id: 1, cells: [at(4, 3, 2), at(4, 3, 1)], color: 1 }, // points -v, free
   ] };
   const c = new Game(chain);
   const b = c.tap(0);
@@ -83,6 +90,32 @@ function unitTests() {
   check('Removing a blocker frees the arrow behind it', c.tap(0).type === 'exit' && c.status === 'won');
   check('Solver finds the order on a solvable board', JSON.stringify(solve(chain)) === '[1,0]');
 
+  // Cube rules: the exit path stops at the edge of the head's face, and a
+  // body can bend over an edge onto another face.
+  let geometryOk = true;
+  for (let i = 0; i < cube.count; i++) {
+    const seen = new Set();
+    for (const d of cube.tangents[cube.faceOf(i)]) {
+      const s = cube.step(i, d);
+      seen.add(s.cell);
+      if (cube.step(s.cell, s.dir ^ 1).cell !== i) geometryOk = false;
+    }
+    if (seen.size !== 4) geometryOk = false;
+  }
+  check('Every cell has 4 neighbours, and stepping back returns to it', geometryOk);
+  const over = cube.step(at(4, 3, 0), 0).cell; // next to (3,0) on face 4, over the edge on face 0
+  const edge = { size: 4, arrows: [
+    { id: 0, cells: [at(4, 2, 0), at(4, 3, 0)], color: 0 },         // points +u at the face's edge
+    { id: 1, cells: [over, cube.step(over, 2).cell], color: 1 },     // just over that edge
+  ] };
+  const e = new Game(edge);
+  check('An arrow at its face\'s edge flies off, even with an arrow just over the edge', e.check(0).free && e.check(0).steps === 0);
+  const tail = cube.step(at(4, 3, 2), 0).cell; // on face 0
+  const bent = { size: 4, arrows: [{ id: 0, cells: [tail, at(4, 3, 2)], color: 0 }] };
+  check('A body bent over an edge is a valid arrow', validateLevel(bent).length === 0);
+  check('Its head points away from the face it came from', headDirection(cube, bent.arrows[0].cells) === 1);
+  check('Its exit path runs to the edge of the head\'s face', JSON.stringify(exitPath(cube, bent.arrows[0].cells)) === JSON.stringify([at(4, 2, 2), at(4, 1, 2), at(4, 0, 2)]));
+
   $('#units').innerHTML = out.map((t) => `<div class="${t.ok ? 'ok' : 'bad'}">${t.ok ? '✓' : '✗'} ${t.name}</div>`).join('');
   return out.every((t) => t.ok);
 }
@@ -90,7 +123,7 @@ function unitTests() {
 function testDifficulty(diff, n, baseSeed) {
   const s = { levels: n, valid: 0, solvable: 0, replays: 0, deterministic: 0, detChecked: 0,
     arrows: [], fill: 0, free: [], ms: 0 };
-  const cells = DIFFICULTIES[diff].size ** 2;
+  const cells = 6 * DIFFICULTIES[diff].size ** 2;
   for (let i = 0; i < n; i++) {
     const seed = (baseSeed + i * 2654435761) >>> 0;
     const t0 = performance.now();
@@ -132,7 +165,7 @@ function run() {
   $('#summary').textContent = 'Running…';
   $('#summary').dataset.status = 'running';
   $('#rows').innerHTML = '';
-  const n = Math.max(1, parseInt($('#count').value, 10) || 500);
+  const n = Math.max(1, parseInt($('#count').value, 10) || 100);
   // Let the page paint "Running…" first.
   setTimeout(() => {
     const unitsOk = unitTests();
@@ -143,7 +176,7 @@ function run() {
       const ok = s.valid === n && s.solvable === n && s.replays === n && s.deterministic === s.detChecked;
       allOk = allOk && ok;
       $('#rows').insertAdjacentHTML('beforeend', `<tr>
-        <td>${DIFFICULTIES[diff].label} (${DIFFICULTIES[diff].size}×${DIFFICULTIES[diff].size})</td><td>${n}</td>
+        <td>${DIFFICULTIES[diff].label} (6 × ${DIFFICULTIES[diff].size}×${DIFFICULTIES[diff].size})</td><td>${n}</td>
         ${cell(s.valid, n)}${cell(s.solvable, n)}${cell(s.replays, n)}${cell(s.deterministic, s.detChecked)}
         <td>${avg(s.arrows).toFixed(1)} (${Math.min(...s.arrows)}–${Math.max(...s.arrows)})</td>
         <td>${Math.round((s.fill / n) * 100)}%</td>

@@ -1,8 +1,13 @@
 # Arrow Escape
 
-An offline iPad puzzle game. Tap an arrow and it slides forward along its own
-path. If nothing is in the way, it leaves the board. If another arrow blocks
-it, it bumps and you lose a heart. Clear the board to win.
+An offline iPad puzzle game played on a cube. Arrows lie on the cube's six
+faces and can bend over its edges from one face to the next. Tap an arrow and
+it slides the way its head points, to the edge of the face its head is on,
+then flies off into space. If another arrow is in the way, it bumps and you
+lose a heart. Clear the cube to win.
+
+Drag with one finger to spin the cube, pinch to zoom, and twist two fingers
+to turn it.
 
 Plain HTML, CSS and JavaScript: no build step, no frameworks, nothing loaded
 from the internet.
@@ -12,9 +17,9 @@ from the internet.
 | File | What it does |
 | --- | --- |
 | `index.html`, `css/style.css` | The page and its layout (portrait and landscape) |
-| `js/logic.js` | Level generator, rules and solver. No drawing code |
-| `js/render.js` | Canvas drawing and animations |
-| `js/main.js` | Taps, pinch zoom, Apple Pencil hover, hints, timer, saved stats |
+| `js/logic.js` | Cube geometry, level generator, rules and solver. No drawing code |
+| `js/render.js` | Draws the rotating cube and its animations |
+| `js/main.js` | Taps, spinning, pinch zoom, Apple Pencil hover, hints, timer, saved stats |
 | `sw.js` | Offline support (saves every file the game needs) |
 | `manifest.json`, `icons/` | Home Screen app name and icons |
 | `test.html` | Generates hundreds of levels per difficulty and checks each one is solvable |
@@ -22,17 +27,17 @@ from the internet.
 ## How levels are made
 
 Each level is built backwards. Arrows are added one at a time, and each new
-arrow's straight path from its head to the edge must be empty when it's
-added. Removing the arrows in the reverse order therefore always works, so
+arrow's straight path from its head to the edge of its face must be empty
+when it's added. Removing the arrows in the reverse order therefore always works, so
 every board can be solved.
 
-| | Grid | How the board is chosen |
-| --- | --- | --- |
-| Easy | 10×10 | Best of 40: fewest arrows free at the start |
-| Medium | 12×12 | Best of 100: long, bendy arrows; scored on solving rounds and arrows free at the start |
-| Hard | 16×16 | Best of 150, about 35 arrows; scored the same way |
-| Expert | 22×22 | Best of 80, about 47 arrows; scored the same way |
-| Master | 26×26 | Best of 60, about 67 arrows; scored the same way |
+| | Each face | Whole cube | How the cube is chosen |
+| --- | --- | --- | --- |
+| Easy | 4×4 | 96 cells | Best of 40: fewest arrows free at the start |
+| Medium | 5×5 | 150 cells | Best of 100: long, bendy arrows; scored on solving rounds and arrows free at the start |
+| Hard | 7×7 | 294 cells | Best of 120, about 45 arrows; scored the same way |
+| Expert | 9×9 | 486 cells | Best of 70, about 54 arrows; scored the same way |
+| Master | 11×11 | 726 cells | Best of 50, about 81 arrows; scored the same way |
 
 "Solving rounds" means removing every free arrow at once, over and over; more
 rounds means longer chains of arrows waiting on each other. The settings live

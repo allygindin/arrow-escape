@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>Arrow Escape</title>
-  <meta name="description" content="Tap the arrows so each one slides off the board. Clear them all.">
+  <meta name="description" content="Spin the cube and tap the arrows so each one slides off. Clear them all.">
   <meta name="theme-color" content="#F6F1EA" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#14161C" media="(prefers-color-scheme: dark)">
 
@@ -51,7 +51,7 @@
     </header>
 
     <main class="stage">
-      <canvas id="board" aria-label="Game board. Tap an arrow to slide it off the board. Pinch to zoom."></canvas>
+      <canvas id="board" aria-label="Game cube. Tap an arrow to slide it off its face. Drag to spin the cube, pinch to zoom, twist to turn it."></canvas>
       <div class="zoom" role="group" aria-label="Zoom">
         <button type="button" id="zoom-in" class="btn" aria-label="Zoom in">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
@@ -59,7 +59,7 @@
         <button type="button" id="zoom-out" class="btn" aria-label="Zoom out">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
         </button>
-        <button type="button" id="zoom-fit" class="btn" aria-label="Show whole board">
+        <button type="button" id="zoom-fit" class="btn" aria-label="Show whole cube">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
         </button>
       </div>
