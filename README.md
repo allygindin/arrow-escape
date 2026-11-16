@@ -6,6 +6,13 @@ it slides the way its head points, to the edge of the face its head is on,
 then flies off into space. If another arrow is in the way, it bumps and you
 lose a heart. Clear the cube to win.
 
+Some levels have **bridges**: cube edges drawn as a bright green ribbon. An
+arrow that reaches a bridge doesn't fly off there. It goes over the edge and
+straight across the next face, and over the next edge too if that is also a
+bridge, until it reaches a plain edge. Arrows on those faces can block it.
+About 1 in 3 levels has bridges (one on Medium and Hard, one or two on
+Expert and Master, none on Easy).
+
 Drag with one finger to spin the cube, pinch to zoom, and twist two fingers
 to turn it.
 
@@ -27,8 +34,8 @@ from the internet.
 ## How levels are made
 
 Each level is built backwards. Arrows are added one at a time, and each new
-arrow's straight path from its head to the edge of its face must be empty
-when it's added. Removing the arrows in the reverse order therefore always works, so
+arrow's exit path (from its head to the edge where it leaves the cube, over
+any bridges) must be empty when it's added. Removing the arrows in the reverse order therefore always works, so
 every board can be solved.
 
 | | Each face | Whole cube | How the cube is chosen |
@@ -40,8 +47,10 @@ every board can be solved.
 | Master | 11×11 | 726 cells | Best of 50, about 81 arrows; scored the same way |
 
 "Solving rounds" means removing every free arrow at once, over and over; more
-rounds means longer chains of arrows waiting on each other. The settings live
-at the top of `js/logic.js`.
+rounds means longer chains of arrows waiting on each other. On levels with
+bridges, boards where some arrow has to cross a bridge always win. The settings
+(including `bridgeChance` and `bridges`) live at the top of `js/logic.js`.
+Bridges never form a closed ring of four around the cube, so every exit path ends.
 
 ## Run it on a computer
 

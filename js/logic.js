@@ -6,9 +6,14 @@
 // edges onto other faces. Tapped, it slides the way its head points to the
 // edge of the face its head is on, then flies off into space.
 //
-// A level is { difficulty, seed, size, arrows, solution }.
+// A level is { difficulty, seed, size, arrows, solution, bridges }.
 // Each arrow is { id, cells, color }: cells (cell numbers) run from the tail
 // to the head. `id` is the arrow's index.
+//
+// Bridges are cube edges, each written [f, g] (the two faces it joins, f < g).
+// An exit path that reaches a bridge carries on over it onto the next face,
+// and over the next one too if that is also a bridge, until it reaches a
+// plain edge.
 
 export const DIFFICULTIES = {
   // size: cells along each face's side; minLen/maxLen: cells per arrow; bend:
@@ -16,16 +21,17 @@ export const DIFFICULTIES = {
   // preference for heads with long exit paths; headTries: empty cells compared
   // when choosing each head; candidates: boards generated, keeping the hardest
   // (fewest arrows free at the start, or with pick: 'mix', most solving
-  // rounds minus freeWeight x arrows free at the start).
+  // rounds minus freeWeight x arrows free at the start). bridgeChance: share
+  // of levels with bridge edges; bridges: [fewest, most] bridges in such a level.
   easy:   { label: 'Easy',   size: 4,  minLen: 3, maxLen: 8,  bend: 0.6,  density: 0.9,  aim: 3, candidates: 40 },
   medium: { label: 'Medium', size: 5,  minLen: 4, maxLen: 12, bend: 0.65, density: 0.92, aim: 5, headTries: 8,
-            candidates: 100, pick: 'mix', freeWeight: 2 },
+            candidates: 100, pick: 'mix', freeWeight: 2, bridgeChance: 1 / 3, bridges: [1, 1] },
   hard:   { label: 'Hard',   size: 7,  minLen: 3, maxLen: 10, bend: 0.65, density: 0.95, aim: 8, headTries: 20,
-            candidates: 120, pick: 'mix', freeWeight: 1 },
+            candidates: 120, pick: 'mix', freeWeight: 1, bridgeChance: 1 / 3, bridges: [1, 1] },
   expert: { label: 'Expert', size: 9,  minLen: 4, maxLen: 16, bend: 0.7,  density: 0.95, aim: 8, headTries: 24,
-            candidates: 70, pick: 'mix', freeWeight: 1 },
+            candidates: 70, pick: 'mix', freeWeight: 1, bridgeChance: 1 / 3, bridges: [1, 2] },
   master: { label: 'Master', size: 11, minLen: 4, maxLen: 14, bend: 0.75, density: 0.96, aim: 10, headTries: 32,
-            candidates: 50, pick: 'mix', freeWeight: 1 },
+            candidates: 50, pick: 'mix', freeWeight: 1, bridgeChance: 1 / 3, bridges: [1, 2] },
 };
 export const DIFFICULTY_ORDER = ['easy', 'medium', 'hard', 'expert', 'master'];
 export const PALETTE_SIZE = 8;
@@ -103,12 +109,77 @@ export function headDirection(cube, cells) {
   return stepDir(cube, cells[cells.length - 2], cells[cells.length - 1]);
 }
 
-// Cells from just past the head to the edge of the head's face, in order.
-export function exitPath(cube, cells) {
-  const d = headDirection(cube, cells);
-  const out = [];
-  for (let r = cube.step(cells[cells.length - 1], d); !r.wrap; r = cube.step(r.cell, d)) out.push(r.cell);
-  return out;
+// ---------------------------------------------------------------- bridges
+
+// Number for the cube edge between faces a and b.
+export const edgeKey = (a, b) => (a < b ? a * 6 + b : b * 6 + a);
+
+// The level's bridge edges as a Set of edge keys, or null if it has none.
+export function bridgeSet(level) {
+  const list = level.bridges;
+  return list && list.length ? new Set(list.map(([a, b]) => edgeKey(a, b))) : null;
+}
+
+// One step along an exit path: the next cell, or null where the path leaves
+// the cube (at a plain edge). Over a bridge it continues onto the next face.
+// Stepping off face f in direction d lands on face d.
+function exitStep(cube, cell, d, bridges) {
+  const r = cube.step(cell, d);
+  if (!r.wrap) return r;
+  return bridges && bridges.has(edgeKey(cube.faceOf(cell), d)) ? r : null;
+}
+
+// Longest possible exit path. A path that keeps going straight passes at
+// most 4 faces before coming back; levels never have a closed ring of 4
+// bridges, but this cap keeps a bad level from looping forever.
+const maxExit = (cube) => 4 * cube.size;
+
+// The exit path from just past the head to the edge where the arrow leaves
+// the cube, following bridges. Returns { cells, dirs, dir, face }: the cells in
+// order, the direction of travel into each one, and the direction and face
+// the arrow flies off in and from.
+export function exitRoute(cube, cells, bridges = null) {
+  let d = headDirection(cube, cells), cur = cells[cells.length - 1];
+  const out = [], dirs = [];
+  for (let n = 0; n < maxExit(cube); n++) {
+    const r = exitStep(cube, cur, d, bridges);
+    if (!r) break;
+    out.push(r.cell); dirs.push(r.dir);
+    cur = r.cell; d = r.dir;
+  }
+  return { cells: out, dirs, dir: d, face: cube.faceOf(cur) };
+}
+
+// Cells from just past the head to where the arrow leaves the cube, in order.
+export function exitPath(cube, cells, bridges = null) {
+  return exitRoute(cube, cells, bridges).cells;
+}
+
+// True if the exit path crosses a bridge.
+export function usesBridge(cube, cells, bridges) {
+  if (!bridges) return false;
+  const hf = cube.faceOf(cells[cells.length - 1]);
+  return exitPath(cube, cells, bridges).some((c) => cube.faceOf(c) !== hf);
+}
+
+// Problems with a list of bridges (empty = fine).
+function bridgeProblems(bridges) {
+  if (bridges === undefined) return [];
+  if (!Array.isArray(bridges)) return ['bridges is not a list'];
+  const errs = [], seen = new Set(), perAxis = [0, 0, 0];
+  for (const e of bridges) {
+    if (!Array.isArray(e) || e.length !== 2 || !e.every((f) => Number.isInteger(f) && f >= 0 && f < 6)) { errs.push(`bad bridge ${JSON.stringify(e)}`); continue; }
+    const [a, b] = e;
+    if (a >> 1 === b >> 1) { errs.push(`bridge ${a}-${b} does not join neighbouring faces`); continue; }
+    const k = edgeKey(a, b);
+    if (seen.has(k)) errs.push(`bridge ${a}-${b} listed twice`);
+    seen.add(k);
+    perAxis[3 - (a >> 1) - (b >> 1)]++; // the axis the edge runs along
+  }
+  // The 4 edges along one axis form a ring around the cube; with all 4 as
+  // bridges an arrow could circle forever.
+  if (perAxis.some((n) => n >= 4)) errs.push('bridges form a closed ring around the cube');
+  return errs;
 }
 
 // Map of cell -> arrow id (-1 = empty).
@@ -119,14 +190,17 @@ export function buildGrid(cube, arrows) {
 }
 
 // Walks the exit path. `steps` is how many empty cells the head can move
-// before reaching the edge (free) or the first blocking arrow.
-export function scanExit(grid, cube, cells) {
-  const d = headDirection(cube, cells);
+// before leaving the cube (free) or reaching the first blocking arrow.
+export function scanExit(grid, cube, cells, bridges = null) {
+  let d = headDirection(cube, cells), cur = cells[cells.length - 1];
   let steps = 0;
-  for (let r = cube.step(cells[cells.length - 1], d); !r.wrap; r = cube.step(r.cell, d)) {
+  for (let n = 0; n < maxExit(cube); n++) {
+    const r = exitStep(cube, cur, d, bridges);
+    if (!r) break;
     const v = grid[r.cell];
     if (v >= 0) return { free: false, steps, blocker: v };
     steps++;
+    cur = r.cell; d = r.dir;
   }
   return { free: true, steps, blocker: -1 };
 }
@@ -160,7 +234,7 @@ function shuffle(arr, rng) {
 // ---------------------------------------------------------------- generator
 
 // Each level is built backwards. An arrow's head goes on a random empty cell,
-// pointing in a direction whose path to the edge of its face is empty, and
+// pointing in a direction whose exit path (over any bridges) is empty, and
 // its body grows backwards from the head (over cube edges too) without
 // touching filled cells or that exit path. Because every earlier arrow stays
 // clear of this one's exit path, removing arrows in the reverse of placement
@@ -170,16 +244,21 @@ function shuffle(arr, rng) {
 // must be empty. Long exit paths are likely to be crossed by later arrows,
 // which makes the board harder; `aim` sets how strongly they are preferred.
 // Returned in weighted random order.
-function headOptions(grid, cube, head, aim, rng) {
+function headOptions(grid, cube, head, aim, rng, bridges) {
   const options = [];
   for (const d of cube.tangents[cube.faceOf(head)]) {
     const behind = cube.step(head, d ^ 1); // the cell behind the head fixes its direction
     if (grid[behind.cell] >= 0) continue;
     const path = [];
     let clear = true;
-    for (let r = cube.step(head, d); !r.wrap; r = cube.step(r.cell, d)) {
-      if (grid[r.cell] >= 0) { clear = false; break; }
+    let cur = head, s = d;
+    for (let n = 0; n < maxExit(cube); n++) {
+      const r = exitStep(cube, cur, s, bridges);
+      if (!r) break;
+      // A path over bridges can come round to the cell behind the head.
+      if (grid[r.cell] >= 0 || r.cell === behind.cell) { clear = false; break; }
       path.push(r.cell);
+      cur = r.cell; s = r.dir;
     }
     const len = path.length;
     if (clear) options.push({ behind, path, len, key: Math.pow(rng(), 1 / Math.pow(len + 1, aim)) });
@@ -187,7 +266,7 @@ function headOptions(grid, cube, head, aim, rng) {
   return options.sort((a, b) => b.key - a.key);
 }
 
-function placeArrow(grid, cube, p, minLen, rng) {
+function placeArrow(grid, cube, p, minLen, rng, bridges) {
   const { maxLen, bend, aim } = p;
   const empties = [];
   for (let i = 0; i < grid.length; i++) if (grid[i] < 0) empties.push(i);
@@ -198,7 +277,7 @@ function placeArrow(grid, cube, p, minLen, rng) {
   let head = -1, options = null, bestLen = -1;
   for (let t = 0; t < (p.headTries || 1); t++) {
     const i = empties[Math.floor(rng() * empties.length)];
-    const opts = headOptions(grid, cube, i, aim, rng);
+    const opts = headOptions(grid, cube, i, aim, rng, bridges);
     const longest = opts.reduce((m, o) => Math.max(m, o.len), -1);
     if (head < 0 || longest > bestLen) { head = i; options = opts; bestLen = longest; }
   }
@@ -230,7 +309,7 @@ function placeArrow(grid, cube, p, minLen, rng) {
   return null;
 }
 
-function buildCandidate(p, cube, rng) {
+function buildCandidate(p, cube, rng, bridges) {
   const grid = new Int16Array(cube.count).fill(-1);
   const placed = [];
   const goal = Math.round(p.density * cube.count);
@@ -238,7 +317,7 @@ function buildCandidate(p, cube, rng) {
   while (filled < goal && fails < 250) {
     // When the cube gets crowded, allow short arrows to fill the gaps.
     const minLen = fails > 60 ? 2 : p.minLen;
-    const cells = placeArrow(grid, cube, p, minLen, rng);
+    const cells = placeArrow(grid, cube, p, minLen, rng, bridges);
     if (!cells) { fails++; continue; }
     const id = placed.length;
     for (const c of cells) grid[c] = id;
@@ -282,8 +361,9 @@ function assignColors(cellsList, cube, rng) {
 export function countFree(level) {
   const cube = getCube(level.size);
   const grid = buildGrid(cube, level.arrows);
+  const bridges = bridgeSet(level);
   let n = 0;
-  for (const a of level.arrows) if (scanExit(grid, cube, a.cells).free) n++;
+  for (const a of level.arrows) if (scanExit(grid, cube, a.cells, bridges).free) n++;
   return n;
 }
 
@@ -293,10 +373,11 @@ export function countFree(level) {
 export function solveDepth(level) {
   const cube = getCube(level.size);
   const grid = buildGrid(cube, level.arrows);
+  const bridges = bridgeSet(level);
   let left = level.arrows.map((a) => a.id);
   let rounds = 0;
   while (left.length) {
-    const free = left.filter((id) => scanExit(grid, cube, level.arrows[id].cells).free);
+    const free = left.filter((id) => scanExit(grid, cube, level.arrows[id].cells, bridges).free);
     if (!free.length) return -1;
     for (const id of free) for (const c of level.arrows[id].cells) grid[c] = -1;
     const gone = new Set(free);
@@ -306,18 +387,46 @@ export function solveDepth(level) {
   return rounds;
 }
 
+// Random bridge edges for a level ([] for most levels). Each extra bridge
+// half the time shares a face with an earlier one, so chains of bridges
+// happen. Never all 4 edges of a ring (see bridgeProblems).
+function pickBridges(p, rng) {
+  if (!p.bridgeChance || rng() >= p.bridgeChance) return [];
+  const [lo, hi] = p.bridges;
+  const want = lo + Math.floor(rng() * (hi - lo + 1));
+  const all = [];
+  for (let a = 0; a < 6; a++) for (let b = a + 1; b < 6; b++) if (a >> 1 !== b >> 1) all.push([a, b]);
+  const out = [];
+  while (out.length < want) {
+    let pool = all.filter((e) => !out.includes(e) && !bridgeProblems([...out, e]).length);
+    if (out.length && rng() < 0.5) {
+      const near = pool.filter((e) => out.some((o) => o.includes(e[0]) || o.includes(e[1])));
+      if (near.length) pool = near;
+    }
+    if (!pool.length) break;
+    out.push(pool[Math.floor(rng() * pool.length)]);
+  }
+  return out.map((e) => e.slice()).sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+}
+
 export function generateLevel(difficulty = 'easy', seed = randomSeed()) {
   const p = DIFFICULTIES[difficulty];
   if (!p) throw new Error(`Unknown difficulty: ${difficulty}`);
   const cube = getCube(p.size);
   const rng = createRng(seed);
-  // Score each candidate (higher is harder): fewer arrows free at the start,
-  // and with pick: 'mix', more solving rounds too.
+  // Bridges use their own random stream, so levels without bridges are the
+  // same boards they were before bridges existed.
+  const bridgeList = pickBridges(p, createRng(seed ^ 0x9E3779B9));
+  const bridges = bridgeSet({ bridges: bridgeList });
+  // Score each candidate (higher is harder): on levels with bridges, at least
+  // one arrow that has to cross one; then fewer arrows free at the start, and
+  // with pick: 'mix', more solving rounds too.
   const score = (arrows, filled) => {
-    const lv = { size: p.size, arrows };
+    const lv = { size: p.size, arrows, bridges: bridgeList };
     const free = countFree(lv);
     const mix = p.pick === 'mix' ? solveDepth(lv) - p.freeWeight * free : 0;
-    return [mix, -free, filled];
+    const crosses = bridges && arrows.some((a) => usesBridge(cube, a.cells, bridges)) ? 1 : 0;
+    return [crosses, mix, -free, filled];
   };
   const beats = (a, b) => {
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] > b[i];
@@ -325,7 +434,7 @@ export function generateLevel(difficulty = 'easy', seed = randomSeed()) {
   };
   let best = null, bestScore = null;
   for (let c = 0; c < p.candidates; c++) {
-    const cand = buildCandidate(p, cube, rng);
+    const cand = buildCandidate(p, cube, rng, bridges);
     const arrows = cand.placed.map((cells, id) => ({ id, cells, color: 0 }));
     const sc = score(arrows, cand.filled);
     if (!best || beats(sc, bestScore)) { best = arrows; bestScore = sc; }
@@ -338,6 +447,7 @@ export function generateLevel(difficulty = 'easy', seed = randomSeed()) {
     size: p.size,
     arrows: best,
     solution: best.map((a) => a.id).reverse(), // reverse placement order
+    bridges: bridgeList,
   };
 }
 
@@ -348,12 +458,13 @@ export function generateLevel(difficulty = 'easy', seed = randomSeed()) {
 export function solve(level) {
   const cube = getCube(level.size);
   const grid = buildGrid(cube, level.arrows);
+  const bridges = bridgeSet(level);
   const left = new Set(level.arrows.map((a) => a.id));
   const order = [];
   while (left.size) {
     let found = -1;
     for (const id of left) {
-      if (scanExit(grid, cube, level.arrows[id].cells).free) { found = id; break; }
+      if (scanExit(grid, cube, level.arrows[id].cells, bridges).free) { found = id; break; }
     }
     if (found < 0) return null;
     for (const c of level.arrows[found].cells) grid[c] = -1;
@@ -374,6 +485,8 @@ export function validateLevel(level) {
   const { size, arrows } = level;
   if (!Number.isInteger(size) || size < 2) return ['bad size'];
   const cube = getCube(size);
+  errs.push(...bridgeProblems(level.bridges));
+  const bridges = errs.length ? null : bridgeSet(level);
   const seen = new Map();
   arrows.forEach((a, i) => {
     if (a.id !== i) errs.push(`arrow ${i}: id ${a.id} does not match index`);
@@ -387,7 +500,7 @@ export function validateLevel(level) {
     });
     if (!ok) return;
     const own = new Set(a.cells);
-    for (const c of exitPath(cube, a.cells)) {
+    for (const c of exitPath(cube, a.cells, bridges)) {
       if (own.has(c)) { errs.push(`arrow ${i}: exit path crosses its own body`); break; }
     }
     if (!Number.isInteger(a.color) || a.color < 0 || a.color >= PALETTE_SIZE) errs.push(`arrow ${i}: bad color`);
@@ -407,6 +520,7 @@ export class Game {
     this.size = level.size;
     this.cube = getCube(level.size);
     this.grid = buildGrid(this.cube, level.arrows);
+    this.bridges = bridgeSet(level);
     this.alive = new Set(level.arrows.map((a) => a.id));
     this.maxHearts = hearts;
     this.hearts = hearts;
@@ -426,7 +540,7 @@ export class Game {
     return this.grid[cell];
   }
 
-  check(id) { return scanExit(this.grid, this.cube, this.arrow(id).cells); }
+  check(id) { return scanExit(this.grid, this.cube, this.arrow(id).cells, this.bridges); }
 
   freeArrows() {
     const out = [];

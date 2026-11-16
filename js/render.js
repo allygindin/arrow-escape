@@ -4,13 +4,13 @@
 // maps onto the screen with a flat 2D transform. Every visible face is drawn
 // by setting that transform and clipping to the face, then drawing the parts
 // of each arrow that lie on it, in the face's own cell coordinates.
-import { AXES, exitPath, getCube, headDirection } from './logic.js';
+import { AXES, exitRoute, getCube } from './logic.js';
 
 export const PALETTE = ['#E4572E', '#F2A007', '#3FA34D', '#2B7DE9', '#8B5CF6', '#E0479E', '#0EA5B7', '#B5651D'];
 
 const THEME = {
-  light: { board: '#FFFFFF', edge: 'rgba(31,36,51,0.22)', dot: 'rgba(31,36,51,0.16)', hint: '#FFC21A', bump: '#E5484D', shade: '20,24,36' },
-  dark:  { board: '#2A2E39', edge: 'rgba(255,255,255,0.16)', dot: 'rgba(255,255,255,0.18)', hint: '#FFD43B', bump: '#FF6369', shade: '0,0,0' },
+  light: { board: '#FFFFFF', edge: 'rgba(31,36,51,0.22)', dot: 'rgba(31,36,51,0.16)', hint: '#FFC21A', bump: '#E5484D', shade: '20,24,36', bridge: '#7CCB12' },
+  dark:  { board: '#2A2E39', edge: 'rgba(255,255,255,0.16)', dot: 'rgba(255,255,255,0.18)', hint: '#FFD43B', bump: '#FF6369', shade: '0,0,0', bridge: '#B6F24A' },
 };
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
@@ -137,14 +137,18 @@ export class Renderer {
       return add(pa, AXES[fb]);
     };
 
+    // For each face, the faces it meets along a bridge edge.
+    this.bridgeFaces = [[], [], [], [], [], []];
+    for (const [f, g] of game.level.bridges || []) { this.bridgeFaces[f].push(g); this.bridgeFaces[g].push(f); }
+
     for (const a of game.level.arrows) {
-      const d = headDirection(cube, a.cells);
-      const head = a.cells[a.cells.length - 1], hf = cube.faceOf(head);
-      const ray = exitPath(cube, a.cells);
-      // Path = body + exit path to the face's edge + a stretch out into space.
+      // The exit path, over any bridges, and where it leaves the cube.
+      const route = exitRoute(cube, a.cells, game.bridges);
+      const ray = route.cells, d = route.dir, xf = route.face;
+      // Path = body + exit path to the edge it leaves by + a stretch out into space.
       const path = [cube.pos[a.cells[0]]];
       for (let i = 1; i < a.cells.length; i++) path.push(between(a.cells[i - 1], a.cells[i]), cube.pos[a.cells[i]]);
-      let last = head;
+      let last = a.cells[a.cells.length - 1];
       for (const c of ray) { path.push(between(last, c), cube.pos[c]); last = c; }
       let p = cube.pos[last];
       for (let i = 0; i < 2 * a.cells.length + 6; i++) { p = add(p, AXES[d]); path.push(p); }
@@ -153,11 +157,11 @@ export class Renderer {
       for (let i = 1; i < path.length; i++) {
         const fa = facesOf(path[i - 1]), fb = facesOf(path[i]);
         const common = fa.find((f) => fb.includes(f));
-        owner.push(common !== undefined ? common : SPACE + hf);
+        owner.push(common !== undefined ? common : SPACE + xf);
       }
       this.vis.set(a.id, {
-        id: a.id, color: PALETTE[a.color % PALETTE.length], path, owner, dir: d, headFace: hf,
-        len: 2 * (a.cells.length - 1), rayLen: ray.length,
+        id: a.id, color: PALETTE[a.color % PALETTE.length], path, owner, dir: d, exitFace: xf,
+        rayDirs: route.dirs, len: 2 * (a.cells.length - 1), rayLen: ray.length,
         t: 0, alpha: 1, flash: 0, shake: null, anim: null, gone: false,
       });
     }
@@ -292,7 +296,7 @@ export class Renderer {
   bump(id, steps, blocker, done) {
     const v = this.vis.get(id);
     if (!v) return;
-    v.anim = { kind: 'bump', start: performance.now(), fwd: 110 + steps * 45, back: 300, dist: 2 * steps + 0.6, blocker, hit: false, done };
+    v.anim = { kind: 'bump', start: performance.now(), fwd: 110 + steps * 45, back: 300, dist: 2 * steps + 0.6, steps, blocker, hit: false, done };
     this.requestDraw();
   }
 
@@ -370,7 +374,8 @@ export class Renderer {
         if (!a.hit) {
           a.hit = true;
           const b = this.vis.get(a.blocker);
-          if (b) b.shake = { start: now, dir: v.dir };
+          // Shaken the way the arrow was travelling when it hit.
+          if (b) b.shake = { start: now, dir: a.steps < v.rayDirs.length ? v.rayDirs[a.steps] : v.dir };
         }
         const p = clamp01((e - a.fwd) / a.back);
         v.t = a.dist * (1 - easeOut(p));
@@ -421,8 +426,10 @@ export class Renderer {
         ctx.fill();
       }
 
+      this.drawBridges(f, th);
+
       const hv = this.hover >= 0 ? this.vis.get(this.hover) : null;
-      if (hv && !hv.anim && !hv.gone && hv.headFace === f) this.drawPreview(hv);
+      if (hv && !hv.anim && !hv.gone) this.drawPreview(hv, f);
       for (const { v, s } of snakes) this.drawArrow(v, s, f, f, th, now);
 
       // Faces turned away from the light are a little darker.
@@ -440,11 +447,11 @@ export class Renderer {
       ctx.restore();
     }
 
-    // Arrows flying off into space, drawn in their head face's plane and
-    // clipped to the far side of the edge they left from.
+    // Arrows flying off into space, drawn in the plane of the face they leave
+    // from and clipped to the far side of the edge they leave by.
     for (const { v, s } of snakes) {
       if (!v.anim || v.anim.kind !== 'exit') continue;
-      const f = v.headFace;
+      const f = v.exitFace;
       if (!shown[f] && !shown[v.dir]) continue;
       const [dx, dy] = this.localDir(f, AXES[v.dir]);
       ctx.save();
@@ -461,14 +468,60 @@ export class Renderer {
     }
   }
 
-  // Faint dashed line from the head to the edge (Pencil hover). Drawn in the
-  // head face's coordinates.
-  drawPreview(v) {
+  // Bridge edges: a soft band along each side of face f that is a bridge,
+  // a solid line on the edge itself, and a row of chevrons pointing over the
+  // edge, one per cell. Seen from an angle, the two faces' halves meet into
+  // one ribbon with chevrons converging on the edge.
+  drawBridges(f, th) {
+    const list = this.bridgeFaces[f];
+    if (!list.length) return;
+    const { ctx } = this;
+    const N = this.game.size;
+    for (const g of list) {
+      const [dx, dy] = this.localDir(f, AXES[g]);
+      // Face coordinates for a point `a` cells along the edge and `t` cells in from it.
+      const at = (a, t) => (dx > 0 ? [N - t, a] : dx < 0 ? [t, a] : dy > 0 ? [a, N - t] : [a, t]);
+      const band = (w) => {
+        const [x0, y0] = at(0, 0), [x1, y1] = at(N, w);
+        ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+      };
+      ctx.save();
+      ctx.fillStyle = th.bridge;
+      ctx.globalAlpha = 0.18;
+      band(0.42);
+      ctx.globalAlpha = 1;
+      band(0.07);
+      ctx.strokeStyle = th.bridge;
+      ctx.lineWidth = 0.095;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      for (let i = 0; i < N; i++) {
+        const a = i + 0.5;
+        ctx.moveTo(...at(a - 0.22, 0.36));
+        ctx.lineTo(...at(a, 0.15));
+        ctx.lineTo(...at(a + 0.22, 0.36));
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // Faint dashed line along the exit path, over any bridges, to the edge the
+  // arrow would leave by (Pencil hover). Draws the part on face f, in its
+  // coordinates.
+  drawPreview(v, f) {
     if (!v.rayLen) return;
     const { ctx } = this;
-    const f = v.headFace;
-    const h = this.local(f, v.path[v.len]);
-    const [dx, dy] = this.localDir(f, AXES[v.dir]);
+    const start = v.len + 1.2, end = v.len + 2 * v.rayLen + 1; // half-cells along the path
+    const runs = [];
+    let run = null;
+    for (let i = Math.floor(start); i < end; i++) {
+      if (v.owner[i] !== f) { run = null; continue; }
+      if (!run) { run = [this.local(f, i < start ? pointAt(v.path, start) : v.path[i])]; runs.push(run); }
+      run.push(this.local(f, v.path[i + 1]));
+    }
+    if (!runs.length) return;
     ctx.save();
     ctx.globalAlpha = 0.45;
     ctx.strokeStyle = v.color;
@@ -476,8 +529,10 @@ export class Renderer {
     ctx.lineCap = 'round';
     ctx.setLineDash([0.1, 0.18]);
     ctx.beginPath();
-    ctx.moveTo(h[0] + dx * 0.6, h[1] + dy * 0.6);
-    ctx.lineTo(h[0] + dx * (v.rayLen + 0.5), h[1] + dy * (v.rayLen + 0.5));
+    for (const r of runs) {
+      ctx.moveTo(r[0][0], r[0][1]);
+      for (let i = 1; i < r.length; i++) ctx.lineTo(r[i][0], r[i][1]);
+    }
     ctx.stroke();
     ctx.restore();
   }

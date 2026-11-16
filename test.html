@@ -36,7 +36,7 @@
     <table>
       <thead><tr>
         <th>Difficulty</th><th>Levels</th><th>Valid</th><th>Solvable</th><th>Solution replays</th><th>Same seed, same board</th>
-        <th>Arrows avg (min–max)</th><th>Board filled</th><th>Free at start avg (min–max)</th><th>ms / level</th>
+        <th>With bridges</th><th>Bridge crossed</th><th>Arrows avg (min–max)</th><th>Board filled</th><th>Free at start avg (min–max)</th><th>ms / level</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -50,7 +50,7 @@
 // ?n=20 sets how many levels to test per difficulty.
 const qn = new URLSearchParams(location.search).get('n');
 if (qn) document.querySelector('#count').value = qn;
-import { DIFFICULTIES, DIFFICULTY_ORDER, Game, countFree, exitPath, generateLevel, getCube, headDirection, solve, validateLevel } from './js/logic.js';
+import { DIFFICULTIES, DIFFICULTY_ORDER, Game, bridgeSet, countFree, exitPath, exitRoute, generateLevel, getCube, headDirection, solve, usesBridge, validateLevel } from './js/logic.js';
 
 const $ = (s) => document.querySelector(s);
 const failures = [];
@@ -116,13 +116,41 @@ function unitTests() {
   check('Its head points away from the face it came from', headDirection(cube, bent.arrows[0].cells) === 1);
   check('Its exit path runs to the edge of the head\'s face', JSON.stringify(exitPath(cube, bent.arrows[0].cells)) === JSON.stringify([at(4, 2, 2), at(4, 1, 2), at(4, 0, 2)]));
 
+  // Bridges. Face 0 is +X. Off face 4's +u edge, a path lands on face 0
+  // heading -Z, so it runs across face 0 to its edge with face 5 (-Z).
+  const toEdge = [at(4, 2, 0), at(4, 3, 0)]; // points +u, head at the 4-0 edge
+  const bridged = { size: 4, bridges: [[0, 4]], arrows: [
+    { id: 0, cells: toEdge, color: 0 },
+    { id: 1, cells: [over, cube.step(over, 2).cell], color: 1 }, // just over the bridge
+  ] };
+  const bg = new Game(bridged);
+  const br = bg.check(0);
+  check('Over a bridge, an arrow just past the edge blocks', !br.free && br.blocker === 1 && br.steps === 0);
+  const across = exitPath(cube, toEdge, bridgeSet({ bridges: [[0, 4]] }));
+  check('A bridge carries the exit path across the next face', across.length === 4 && across.every((c) => cube.faceOf(c) === 0));
+  const lone = { size: 4, bridges: [[0, 4]], arrows: [{ id: 0, cells: toEdge, color: 0 }] };
+  const lg = new Game(lone);
+  check('With that face empty, the arrow crosses and exits', lg.check(0).free && lg.check(0).steps === 4 && lg.tap(0).type === 'exit');
+  const chained = exitRoute(cube, toEdge, bridgeSet({ bridges: [[0, 4], [0, 5]] }));
+  check('A second bridge at the far edge carries it on again', chained.cells.length === 8 && cube.faceOf(chained.cells[7]) === 5 && chained.face === 5);
+  check('It leaves from the third face, heading away from face 0', chained.dir === 1);
+  check('A bridge elsewhere does not change the path', exitPath(cube, toEdge, bridgeSet({ bridges: [[2, 4]] })).length === 0);
+  check('usesBridge spots a path that crosses', usesBridge(cube, toEdge, bridgeSet(lone)) && !usesBridge(cube, bent.arrows[0].cells, bridgeSet(lone)));
+  const ring = { size: 4, arrows: [], bridges: [[0, 2], [1, 2], [0, 3], [1, 3]] }; // all 4 edges along Z
+  check('Four bridges in a ring around the cube are rejected', validateLevel(ring).some((m) => m.includes('ring')));
+  check('A bridge between opposite faces is rejected', validateLevel({ size: 4, arrows: [], bridges: [[0, 1]] }).length > 0);
+  // Tail just over face 4's -u edge on face 1, head pointing +u: three
+  // bridges carry the path all the way round the cube back to the tail.
+  const selfCross = { size: 4, bridges: [[0, 4], [0, 5], [1, 5]], arrows: [{ id: 0, cells: [cube.step(at(4, 0, 0), 1).cell, at(4, 0, 0)], color: 0 }] };
+  check('An exit path that comes round onto its own body is rejected', validateLevel(selfCross).some((m) => m.includes('own body')));
+
   $('#units').innerHTML = out.map((t) => `<div class="${t.ok ? 'ok' : 'bad'}">${t.ok ? '✓' : '✗'} ${t.name}</div>`).join('');
   return out.every((t) => t.ok);
 }
 
 function testDifficulty(diff, n, baseSeed) {
   const s = { levels: n, valid: 0, solvable: 0, replays: 0, deterministic: 0, detChecked: 0,
-    arrows: [], fill: 0, free: [], ms: 0 };
+    bridged: 0, crossed: 0, arrows: [], fill: 0, free: [], ms: 0 };
   const cells = 6 * DIFFICULTIES[diff].size ** 2;
   for (let i = 0; i < n; i++) {
     const seed = (baseSeed + i * 2654435761) >>> 0;
@@ -150,6 +178,11 @@ function testDifficulty(diff, n, baseSeed) {
       else fail(`${diff} seed ${seed}: same seed gave a different board`);
     }
 
+    if (level.bridges.length) {
+      s.bridged++;
+      const cube = getCube(level.size), bs = bridgeSet(level);
+      if (level.arrows.some((a) => usesBridge(cube, a.cells, bs))) s.crossed++;
+    }
     s.arrows.push(level.arrows.length);
     s.fill += level.arrows.reduce((sum, a) => sum + a.cells.length, 0) / cells;
     s.free.push(countFree(level));
@@ -178,6 +211,7 @@ function run() {
       $('#rows').insertAdjacentHTML('beforeend', `<tr>
         <td>${DIFFICULTIES[diff].label} (6 × ${DIFFICULTIES[diff].size}×${DIFFICULTIES[diff].size})</td><td>${n}</td>
         ${cell(s.valid, n)}${cell(s.solvable, n)}${cell(s.replays, n)}${cell(s.deterministic, s.detChecked)}
+        <td>${s.bridged}</td><td>${s.crossed}/${s.bridged}</td>
         <td>${avg(s.arrows).toFixed(1)} (${Math.min(...s.arrows)}–${Math.max(...s.arrows)})</td>
         <td>${Math.round((s.fill / n) * 100)}%</td>
         <td>${avg(s.free).toFixed(1)} (${Math.min(...s.free)}–${Math.max(...s.free)})</td>
