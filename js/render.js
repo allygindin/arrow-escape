@@ -6,12 +6,15 @@
 // of each arrow that lie on it, in the face's own cell coordinates.
 import { AXES, exitRoute, getCube } from './logic.js';
 
-export const PALETTE = ['#E4572E', '#F2A007', '#3FA34D', '#2B7DE9', '#8B5CF6', '#E0479E', '#0EA5B7', '#B5651D'];
-
+// ink: regular arrows. Two-sided arrows: teal is the half at end 0 (the usual
+// head), pink the half at end 1.
 const THEME = {
-  light: { board: '#FFFFFF', edge: 'rgba(31,36,51,0.22)', dot: 'rgba(31,36,51,0.16)', hint: '#FFC21A', bump: '#E5484D', shade: '20,24,36', bridge: '#7CCB12' },
-  dark:  { board: '#2A2E39', edge: 'rgba(255,255,255,0.16)', dot: 'rgba(255,255,255,0.18)', hint: '#FFD43B', bump: '#FF6369', shade: '0,0,0', bridge: '#B6F24A' },
+  light: { board: '#FFFFFF', edge: 'rgba(31,36,51,0.22)', dot: 'rgba(31,36,51,0.16)', hint: '#FFC21A', bump: '#E5484D', shade: '20,24,36', bridge: '#7CCB12',
+           ink: '#111318', teal: '#0FA89A', pink: '#E0429A' },
+  dark:  { board: '#2A2E39', edge: 'rgba(255,255,255,0.16)', dot: 'rgba(255,255,255,0.18)', hint: '#FFD43B', bump: '#FF6369', shade: '0,0,0', bridge: '#B6F24A',
+           ink: '#F5F6F8', teal: '#2DD4BF', pink: '#FF6CB8' },
 };
+const LINE = 0.22; // arrow line width, in cells
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
 const easeIn = (p) => p * p;
@@ -67,24 +70,35 @@ function pointAt(path, s) {
 // The drawn arrow is the stretch of its path from t (tail) to t + len (head),
 // so as t grows the body follows its own path like a snake. Path points are
 // half a cell apart. Returns the points, the owner of each segment between
-// them, and the segment the head is on.
+// them, whether each segment is in the leading half (two-sided arrows only;
+// the halves split at the middle), and the segments the head and tail are on.
 function snake(v, t) {
   const { path, owner } = v;
-  const end = t + v.len;
-  const pts = [pointAt(path, t)], own = [];
-  const first = Math.max(0, Math.min(path.length - 2, Math.floor(t)));
-  for (let k = Math.floor(t) + 1; k < end; k++) pts.push(path[k]);
-  pts.push(pointAt(path, end));
-  for (let i = 0; i < pts.length - 1; i++) own.push(owner[Math.min(owner.length - 1, first + i)]);
-  const j = Math.max(0, Math.min(path.length - 2, Math.ceil(end) - 1));
-  return { pts, own, headSeg: j };
+  const end = t + v.len, mid = t + v.len / 2;
+  const at = [t];
+  for (let k = Math.floor(t) + 1; k < end; k++) at.push(k);
+  at.push(end);
+  if (v.both) {
+    const i = at.findIndex((s) => s >= mid - 1e-9);
+    if (Math.abs(at[i] - mid) > 1e-9) at.splice(i, 0, mid);
+  }
+  const last = path.length - 2;
+  const seg = (s) => Math.max(0, Math.min(last, Math.floor(s + 1e-9)));
+  const pts = at.map((s) => pointAt(path, s)), own = [], lead = [];
+  for (let i = 0; i < at.length - 1; i++) {
+    own.push(owner[seg(at[i])]);
+    lead.push(v.both && (at[i] + at[i + 1]) / 2 > mid);
+  }
+  const headSeg = Math.max(0, Math.min(last, Math.ceil(end) - 1));
+  return { pts, own, lead, headSeg, tailSeg: seg(t) };
 }
 
-function distToSegment(px, py, a, b) {
+// Distance from a point to a segment, and how far along it the nearest point is (0..1).
+function nearSegment(px, py, a, b) {
   const vx = b[0] - a[0], vy = b[1] - a[1];
   const l2 = vx * vx + vy * vy;
   const t = l2 ? clamp01(((px - a[0]) * vx + (py - a[1]) * vy) / l2) : 0;
-  return Math.hypot(px - (a[0] + vx * t), py - (a[1] + vy * t));
+  return { d: Math.hypot(px - (a[0] + vx * t), py - (a[1] + vy * t)), t };
 }
 
 export class Renderer {
@@ -95,7 +109,9 @@ export class Renderer {
     this.cube = null;
     this.vis = new Map();
     this.hover = -1;
+    this.hoverEnd = 0;
     this.hint = -1;
+    this.hintEnd = -1; // which half of a two-sided hint glows (-1 = all of it)
     this.hintStart = 0;
     this.w = 0; this.h = 0; this.dpr = 1;
     this.rot = START.slice();
@@ -141,17 +157,18 @@ export class Renderer {
     this.bridgeFaces = [[], [], [], [], [], []];
     for (const [f, g] of game.level.bridges || []) { this.bridgeFaces[f].push(g); this.bridgeFaces[g].push(f); }
 
-    for (const a of game.level.arrows) {
+    // Everything needed to animate an arrow leaving with `cells` ordered tail -> head.
+    const buildRoute = (cells) => {
       // The exit path, over any bridges, and where it leaves the cube.
-      const route = exitRoute(cube, a.cells, game.bridges);
+      const route = exitRoute(cube, cells, game.bridges);
       const ray = route.cells, d = route.dir, xf = route.face;
       // Path = body + exit path to the edge it leaves by + a stretch out into space.
-      const path = [cube.pos[a.cells[0]]];
-      for (let i = 1; i < a.cells.length; i++) path.push(between(a.cells[i - 1], a.cells[i]), cube.pos[a.cells[i]]);
-      let last = a.cells[a.cells.length - 1];
+      const path = [cube.pos[cells[0]]];
+      for (let i = 1; i < cells.length; i++) path.push(between(cells[i - 1], cells[i]), cube.pos[cells[i]]);
+      let last = cells[cells.length - 1];
       for (const c of ray) { path.push(between(last, c), cube.pos[c]); last = c; }
       let p = cube.pos[last];
-      for (let i = 0; i < 2 * a.cells.length + 6; i++) { p = add(p, AXES[d]); path.push(p); }
+      for (let i = 0; i < 2 * cells.length + 6; i++) { p = add(p, AXES[d]); path.push(p); }
 
       const owner = [];
       for (let i = 1; i < path.length; i++) {
@@ -159,9 +176,17 @@ export class Renderer {
         const common = fa.find((f) => fb.includes(f));
         owner.push(common !== undefined ? common : SPACE + xf);
       }
+      return { path, owner, dir: d, exitFace: xf, rayDirs: route.dirs, rayLen: ray.length };
+    };
+
+    for (const a of game.level.arrows) {
+      // routes[e]: leaving by end e. A two-sided arrow's second route runs
+      // over the same body backwards. The live route's fields are copied
+      // onto the arrow itself (see useRoute).
+      const routes = [buildRoute(a.cells)];
+      if (a.both) routes.push(buildRoute(a.cells.slice().reverse()));
       this.vis.set(a.id, {
-        id: a.id, color: PALETTE[a.color % PALETTE.length], path, owner, dir: d, exitFace: xf,
-        rayDirs: route.dirs, len: 2 * (a.cells.length - 1), rayLen: ray.length,
+        id: a.id, both: !!a.both, routes, end: 0, ...routes[0], len: 2 * (a.cells.length - 1),
         t: 0, alpha: 1, flash: 0, shake: null, anim: null, gone: false,
       });
     }
@@ -283,9 +308,17 @@ export class Renderer {
     return !!(v && (v.anim || v.gone));
   }
 
-  exit(id, done) {
+  // Makes the arrow move along the route for leaving by `end`.
+  useRoute(v, end) {
+    const e = v.both ? end : 0;
+    v.end = e;
+    Object.assign(v, v.routes[e]);
+  }
+
+  exit(id, end, done) {
     const v = this.vis.get(id);
     if (!v) return;
+    this.useRoute(v, end);
     const dist = 2 * v.rayLen + 1 + v.len + 3; // half-cells until the tail is off the cube
     v.anim = { kind: 'exit', start: performance.now(), dur: 180 + dist * 18, dist, done };
     if (this.hover === id) this.hover = -1;
@@ -293,27 +326,33 @@ export class Renderer {
     this.requestDraw();
   }
 
-  bump(id, steps, blocker, done) {
+  bump(id, end, steps, blocker, done) {
     const v = this.vis.get(id);
     if (!v) return;
+    this.useRoute(v, end);
     v.anim = { kind: 'bump', start: performance.now(), fwd: 110 + steps * 45, back: 300, dist: 2 * steps + 0.6, steps, blocker, hit: false, done };
     this.requestDraw();
   }
 
-  setHover(id) {
-    if (id !== this.hover) { this.hover = id; this.requestDraw(); }
+  setHover(id, end = 0) {
+    if (id !== this.hover || end !== this.hoverEnd) { this.hover = id; this.hoverEnd = end; this.requestDraw(); }
   }
 
-  setHint(id) {
+  // end: the half of a two-sided arrow to light up (-1 = all of it).
+  setHint(id, end = -1) {
     this.hint = id;
+    this.hintEnd = end;
     this.hintStart = performance.now();
     this.requestDraw();
   }
 
-  // The arrow under a screen point (-1 if none). Taps near an arrow's line
-  // count, not just taps inside its cells.
+  // The arrow under a screen point, and the end it should leave by: for a
+  // two-sided arrow, the end of the half that was touched. Returns
+  // { id, end }, with id -1 if there is no arrow there. Taps near an arrow's
+  // line count, not just taps inside its cells.
   hitTest(clientX, clientY) {
-    if (!this.game || this.scale <= 0) return -1;
+    const none = { id: -1, end: 0 };
+    if (!this.game || this.scale <= 0) return none;
     const r = this.canvas.getBoundingClientRect();
     const sx = clientX - r.left, sy = clientY - r.top;
     const N = this.game.size;
@@ -327,21 +366,37 @@ export class Renderer {
       const u = (m[3] * x - m[2] * y) / det, v = (m[0] * y - m[1] * x) / det;
       if (u < 0 || v < 0 || u > N || v > N) continue;
 
+      // The nearest point on an arrow's body on this face, as a distance and
+      // a position along the body (0 = tail, len = head). Uses the body's
+      // usual direction whichever way it last moved.
+      const nearest = (a) => {
+        const { path, owner } = a.routes[0];
+        let bd = Infinity, pos = 0;
+        for (let i = 0; i < a.len; i++) {
+          if (owner[i] !== f) continue;
+          const n = nearSegment(u, v, this.local(f, path[i]), this.local(f, path[i + 1]));
+          if (n.d < bd) { bd = n.d; pos = i + n.t; }
+        }
+        return { d: bd, pos };
+      };
+      const pick = (a, pos) => ({ id: a.id, end: a.both && pos < a.len / 2 ? 1 : 0 });
+
       const direct = this.game.arrowAt(f * N * N + Math.floor(v) * N + Math.floor(u));
-      if (direct >= 0) return this.isAnimating(direct) ? -1 : direct;
-      let best = -1, bestD = 0.75;
+      if (direct >= 0) {
+        if (this.isAnimating(direct)) return none;
+        const a = this.vis.get(direct);
+        return pick(a, nearest(a).pos);
+      }
+      let best = none, bestD = 0.75;
       for (const id of this.game.alive) {
         if (this.isAnimating(id)) continue;
         const a = this.vis.get(id);
-        for (let i = 0; i < a.len; i++) {
-          if (a.owner[i] !== f) continue;
-          const d = distToSegment(u, v, this.local(f, a.path[i]), this.local(f, a.path[i + 1]));
-          if (d < bestD) { bestD = d; best = id; }
-        }
+        const n = nearest(a);
+        if (n.d < bestD) { bestD = n.d; best = pick(a, n.pos); }
       }
       return best;
     }
-    return -1;
+    return none;
   }
 
   requestDraw() {
@@ -429,7 +484,7 @@ export class Renderer {
       this.drawBridges(f, th);
 
       const hv = this.hover >= 0 ? this.vis.get(this.hover) : null;
-      if (hv && !hv.anim && !hv.gone) this.drawPreview(hv, f);
+      if (hv && !hv.anim && !hv.gone) this.drawPreview(hv, hv.both ? this.hoverEnd : 0, f, th);
       for (const { v, s } of snakes) this.drawArrow(v, s, f, f, th, now);
 
       // Faces turned away from the light are a little darker.
@@ -507,24 +562,25 @@ export class Renderer {
     }
   }
 
-  // Faint dashed line along the exit path, over any bridges, to the edge the
-  // arrow would leave by (Pencil hover). Draws the part on face f, in its
-  // coordinates.
-  drawPreview(v, f) {
-    if (!v.rayLen) return;
+  // Faint dashed line along the exit path for leaving by `end`, over any
+  // bridges, to the edge the arrow would leave by (Pencil hover). Draws the
+  // part on face f, in its coordinates.
+  drawPreview(v, end, f, th) {
+    const { path, owner, rayLen } = v.routes[end];
+    if (!rayLen) return;
     const { ctx } = this;
-    const start = v.len + 1.2, end = v.len + 2 * v.rayLen + 1; // half-cells along the path
+    const start = v.len + 1.2, stop = v.len + 2 * rayLen + 1; // half-cells along the path
     const runs = [];
     let run = null;
-    for (let i = Math.floor(start); i < end; i++) {
-      if (v.owner[i] !== f) { run = null; continue; }
-      if (!run) { run = [this.local(f, i < start ? pointAt(v.path, start) : v.path[i])]; runs.push(run); }
-      run.push(this.local(f, v.path[i + 1]));
+    for (let i = Math.floor(start); i < stop; i++) {
+      if (owner[i] !== f) { run = null; continue; }
+      if (!run) { run = [this.local(f, i < start ? pointAt(path, start) : path[i])]; runs.push(run); }
+      run.push(this.local(f, path[i + 1]));
     }
     if (!runs.length) return;
     ctx.save();
     ctx.globalAlpha = 0.45;
-    ctx.strokeStyle = v.color;
+    ctx.strokeStyle = this.colorOf(v, end, th);
     ctx.lineWidth = 0.08;
     ctx.lineCap = 'round';
     ctx.setLineDash([0.1, 0.18]);
@@ -537,89 +593,115 @@ export class Renderer {
     ctx.restore();
   }
 
+  // Color of the half of arrow v at `end`: ink for regular arrows; teal (end 0)
+  // or pink (end 1) for two-sided ones.
+  colorOf(v, end, th) {
+    if (!v.both) return th.ink;
+    return end === 1 ? th.pink : th.teal;
+  }
+
   // Draws the parts of arrow v owned by `own` (a face, or SPACE + face),
   // in face f's coordinates. The context is already set up for that face.
   drawArrow(v, s, own, f, th, now) {
     const { ctx } = this;
-    const { pts, own: owners, headSeg } = s;
+    const { pts, own: owners, lead, headSeg, tailSeg } = s;
+    // The end whose half a segment is in: the leading half belongs to the
+    // end the arrow is moving toward.
+    const endOf = (isLead) => (!v.both ? 0 : isLead ? v.end : 1 - v.end);
 
-    // Runs of consecutive segments that lie on this face.
+    // Runs of consecutive segments on this face, split where the halves meet.
     const runs = [];
     let run = null;
     for (let i = 0; i < owners.length; i++) {
       if (owners[i] !== own) { run = null; continue; }
-      if (!run) { run = [this.local(f, pts[i])]; runs.push(run); }
-      run.push(this.local(f, pts[i + 1]));
-    }
-    const headHere = v.owner[headSeg] === own;
-    if (!runs.length && !headHere) return;
-
-    let sx = 0, sy = 0;
-    if (v.shake) {
-      const e = now - v.shake.start;
-      const k = Math.sin(e / 22) * (1 - e / 320) * 0.08;
-      const [ux, uy] = this.localDir(f, AXES[v.shake.dir]);
-      sx = ux * k; sy = uy * k;
+      const e = endOf(lead[i]);
+      if (!run || run.end !== e) { run = { end: e, pts: [this.local(f, pts[i])] }; runs.push(run); }
+      run.pts.push(this.local(f, pts[i + 1]));
     }
 
-    // The head: pointing along the segment it's on.
-    let tip = null, left = null, right = null;
-    if (headHere) {
-      const h = this.local(f, pts[pts.length - 1]);
-      const a = this.local(f, v.path[headSeg]), b = this.local(f, v.path[headSeg + 1]);
+    // Heads: at the leading end, and for two-sided arrows at the trailing
+    // end too, pointing back along the body.
+    const heads = [];
+    const addHead = (h, a, b, e) => {
       const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
       const dx = (b[0] - a[0]) / l, dy = (b[1] - a[1]) / l, px = -dy, py = dx;
-      tip = [h[0] + dx * 0.36, h[1] + dy * 0.36];
-      left = [h[0] - dx * 0.1 + px * 0.27, h[1] - dy * 0.1 + py * 0.27];
-      right = [h[0] - dx * 0.1 - px * 0.27, h[1] - dy * 0.1 - py * 0.27];
+      heads.push({
+        end: e, base: h,
+        tip: [h[0] + dx * 0.36, h[1] + dy * 0.36],
+        left: [h[0] - dx * 0.1 + px * 0.27, h[1] - dy * 0.1 + py * 0.27],
+        right: [h[0] - dx * 0.1 - px * 0.27, h[1] - dy * 0.1 - py * 0.27],
+      });
+    };
+    if (v.owner[headSeg] === own) {
+      addHead(this.local(f, pts[pts.length - 1]), this.local(f, v.path[headSeg]), this.local(f, v.path[headSeg + 1]), endOf(true));
     }
+    if (v.both && v.owner[tailSeg] === own) {
+      addHead(this.local(f, pts[0]), this.local(f, v.path[tailSeg + 1]), this.local(f, v.path[tailSeg]), endOf(false));
+    }
+    if (!runs.length && !heads.length) return;
 
-    const line = (withTip) => {
+    // want: one end's half, or -1 for the whole arrow.
+    const lines = (want, withTips) => {
       ctx.beginPath();
       for (const r of runs) {
-        ctx.moveTo(r[0][0] + sx, r[0][1] + sy);
-        for (let i = 1; i < r.length; i++) ctx.lineTo(r[i][0] + sx, r[i][1] + sy);
+        if (want >= 0 && r.end !== want) continue;
+        ctx.moveTo(r.pts[0][0], r.pts[0][1]);
+        for (let i = 1; i < r.pts.length; i++) ctx.lineTo(r.pts[i][0], r.pts[i][1]);
       }
-      if (withTip && tip) {
-        const h = runs.length ? runs[runs.length - 1][runs[runs.length - 1].length - 1] : null;
-        if (h) ctx.lineTo(tip[0] + sx, tip[1] + sy);
+      if (withTips) {
+        for (const h of heads) {
+          if (want >= 0 && h.end !== want) continue;
+          ctx.moveTo(h.base[0], h.base[1]);
+          ctx.lineTo(h.tip[0], h.tip[1]);
+        }
       }
     };
-    const head = () => {
+    const headShape = (h) => {
       ctx.beginPath();
-      ctx.moveTo(tip[0] + sx, tip[1] + sy);
-      ctx.lineTo(left[0] + sx, left[1] + sy);
-      ctx.lineTo(right[0] + sx, right[1] + sy);
+      ctx.moveTo(h.tip[0], h.tip[1]);
+      ctx.lineTo(h.left[0], h.left[1]);
+      ctx.lineTo(h.right[0], h.right[1]);
       ctx.closePath();
     };
 
     ctx.save();
+    if (v.shake) {
+      const e = now - v.shake.start;
+      const k = Math.sin(e / 22) * (1 - e / 320) * 0.08;
+      const [ux, uy] = this.localDir(f, AXES[v.shake.dir]);
+      ctx.translate(ux * k, uy * k);
+    }
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
+    // Glow: the hinted arrow (only the half that can leave, for a two-sided
+    // one with a single way out), or the half under the Pencil.
     if (v.id === this.hint) {
       const pulse = 0.5 + 0.5 * Math.sin((now - this.hintStart) / 170);
       ctx.globalAlpha = v.alpha * (0.4 + 0.45 * pulse);
       ctx.strokeStyle = th.hint;
       ctx.lineWidth = 0.62 + 0.12 * pulse;
-      line(true);
+      lines(v.both ? this.hintEnd : -1, true);
       ctx.stroke();
     } else if (v.id === this.hover && !v.anim) {
+      const want = v.both ? this.hoverEnd : -1;
       ctx.globalAlpha = v.alpha * 0.25;
-      ctx.strokeStyle = v.color;
+      ctx.strokeStyle = this.colorOf(v, Math.max(0, want), th);
       ctx.lineWidth = 0.62;
-      line(true);
+      lines(want, true);
       ctx.stroke();
     }
 
     ctx.globalAlpha = v.alpha;
-    ctx.strokeStyle = v.color;
-    ctx.fillStyle = v.color;
-    ctx.lineWidth = 0.28;
-    line(false);
-    ctx.stroke();
-    if (tip) {
-      head();
+    for (const e of v.both ? [0, 1] : [0]) {
+      ctx.strokeStyle = this.colorOf(v, e, th);
+      ctx.lineWidth = LINE;
+      lines(e, false);
+      ctx.stroke();
+    }
+    for (const h of heads) {
+      ctx.fillStyle = ctx.strokeStyle = this.colorOf(v, h.end, th);
+      headShape(h);
       ctx.fill();
       ctx.lineWidth = 0.06;
       ctx.stroke();
@@ -629,20 +711,10 @@ export class Renderer {
       ctx.globalAlpha = v.alpha * v.flash * 0.85;
       ctx.strokeStyle = th.bump;
       ctx.fillStyle = th.bump;
-      ctx.lineWidth = 0.28;
-      line(false);
+      ctx.lineWidth = LINE;
+      lines(-1, false);
       ctx.stroke();
-      if (tip) { head(); ctx.fill(); }
-    }
-
-    // Tail cap, a touch darker so the two ends read differently.
-    if (owners[0] === own) {
-      const t = this.local(f, pts[0]);
-      ctx.globalAlpha = v.alpha * 0.35;
-      ctx.fillStyle = '#000';
-      ctx.beginPath();
-      ctx.arc(t[0] + sx, t[1] + sy, 0.07, 0, Math.PI * 2);
-      ctx.fill();
+      for (const h of heads) { headShape(h); ctx.fill(); }
     }
     ctx.restore();
   }

@@ -13,6 +13,14 @@ bridge, until it reaches a plain edge. Arrows on those faces can block it.
 About 1 in 3 levels has bridges (one on Medium and Hard, one or two on
 Expert and Master, none on Easy).
 
+Regular arrows are black (white in dark mode). About half the levels also
+have **two-sided arrows**: pink at one end, teal at the other, with a head at
+each end. Tap the pink half to send it out the pink end, or the teal half to
+send it out the teal end. Often one end is blocked, and choosing that end
+bumps like any blocked arrow. A hint lights up only the half that can leave.
+There are one or two on Medium and Hard, two to four on Expert and Master,
+and none on Easy.
+
 Drag with one finger to spin the cube, pinch to zoom, and twist two fingers
 to turn it.
 
@@ -38,6 +46,12 @@ arrow's exit path (from its head to the edge where it leaves the cube, over
 any bridges) must be empty when it's added. Removing the arrows in the reverse order therefore always works, so
 every board can be solved.
 
+Two-sided arrows are picked after the board is built: giving an arrow a
+second way out can't make the board unsolvable. Only arrows of 4 or more cells
+whose second exit path doesn't run into their own body qualify. Ones whose
+second end is blocked at the start come first, so the choice matters, and two
+two-sided arrows never touch.
+
 | | Each face | Whole cube | How the cube is chosen |
 | --- | --- | --- | --- |
 | Easy | 4×4 | 96 cells | Best of 40: fewest arrows free at the start |
@@ -49,7 +63,7 @@ every board can be solved.
 "Solving rounds" means removing every free arrow at once, over and over; more
 rounds means longer chains of arrows waiting on each other. On levels with
 bridges, boards where some arrow has to cross a bridge always win. The settings
-(including `bridgeChance` and `bridges`) live at the top of `js/logic.js`.
+(including `bridgeChance`, `bridges`, `twoSidedChance` and `twoSided`) live at the top of `js/logic.js`.
 Bridges never form a closed ring of four around the cube, so every exit path ends.
 
 ## Run it on a computer

@@ -7,8 +7,10 @@
 // edge of the face its head is on, then flies off into space.
 //
 // A level is { difficulty, seed, size, arrows, solution, bridges }.
-// Each arrow is { id, cells, color }: cells (cell numbers) run from the tail
-// to the head. `id` is the arrow's index.
+// Each arrow is { id, cells, both }: cells (cell numbers) run from the tail
+// to the head. `id` is the arrow's index. A two-sided arrow (both: true) has
+// a head at each end and can leave by either one: end 0 is the usual head
+// (the last cell), end 1 is the first cell.
 //
 // Bridges are cube edges, each written [f, g] (the two faces it joins, f < g).
 // An exit path that reaches a bridge carries on over it onto the next face,
@@ -23,18 +25,19 @@ export const DIFFICULTIES = {
   // (fewest arrows free at the start, or with pick: 'mix', most solving
   // rounds minus freeWeight x arrows free at the start). bridgeChance: share
   // of levels with bridge edges; bridges: [fewest, most] bridges in such a level.
+  // twoSidedChance: share of levels with two-sided arrows; twoSided: [fewest,
+  // most] two-sided arrows in such a level.
   easy:   { label: 'Easy',   size: 4,  minLen: 3, maxLen: 8,  bend: 0.6,  density: 0.9,  aim: 3, candidates: 40 },
   medium: { label: 'Medium', size: 5,  minLen: 4, maxLen: 12, bend: 0.65, density: 0.92, aim: 5, headTries: 8,
-            candidates: 100, pick: 'mix', freeWeight: 2, bridgeChance: 1 / 3, bridges: [1, 1] },
+            candidates: 100, pick: 'mix', freeWeight: 2, bridgeChance: 1 / 3, bridges: [1, 1], twoSidedChance: 0.5, twoSided: [1, 2] },
   hard:   { label: 'Hard',   size: 7,  minLen: 3, maxLen: 10, bend: 0.65, density: 0.95, aim: 8, headTries: 20,
-            candidates: 120, pick: 'mix', freeWeight: 1, bridgeChance: 1 / 3, bridges: [1, 1] },
+            candidates: 120, pick: 'mix', freeWeight: 1, bridgeChance: 1 / 3, bridges: [1, 1], twoSidedChance: 0.5, twoSided: [1, 2] },
   expert: { label: 'Expert', size: 9,  minLen: 4, maxLen: 16, bend: 0.7,  density: 0.95, aim: 8, headTries: 24,
-            candidates: 70, pick: 'mix', freeWeight: 1, bridgeChance: 1 / 3, bridges: [1, 2] },
+            candidates: 70, pick: 'mix', freeWeight: 1, bridgeChance: 1 / 3, bridges: [1, 2], twoSidedChance: 0.5, twoSided: [2, 4] },
   master: { label: 'Master', size: 11, minLen: 4, maxLen: 14, bend: 0.75, density: 0.96, aim: 10, headTries: 32,
-            candidates: 50, pick: 'mix', freeWeight: 1, bridgeChance: 1 / 3, bridges: [1, 2] },
+            candidates: 50, pick: 'mix', freeWeight: 1, bridgeChance: 1 / 3, bridges: [1, 2], twoSidedChance: 0.5, twoSided: [2, 4] },
 };
 export const DIFFICULTY_ORDER = ['easy', 'medium', 'hard', 'expert', 'master'];
-export const PALETTE_SIZE = 8;
 
 // ---------------------------------------------------------------- cube geometry
 //
@@ -205,6 +208,19 @@ export function scanExit(grid, cube, cells, bridges = null) {
   return { free: true, steps, blocker: -1 };
 }
 
+// ---------------------------------------------------------------- two-sided arrows
+
+// The ends an arrow can leave by: [0], or [0, 1] for a two-sided arrow.
+export const endsOf = (a) => (a.both ? [0, 1] : [0]);
+
+// The arrow's cells ordered so the given end is the head.
+export const endCells = (a, end) => (end === 1 && a.both ? a.cells.slice().reverse() : a.cells);
+
+// True if the arrow can leave right now by some end.
+function canLeave(grid, cube, a, bridges) {
+  return endsOf(a).some((e) => scanExit(grid, cube, endCells(a, e), bridges).free);
+}
+
 // ---------------------------------------------------------------- random
 
 // Small seeded random generator (mulberry32), so a seed always rebuilds the same board.
@@ -328,42 +344,42 @@ function buildCandidate(p, cube, rng, bridges) {
   return { placed, filled };
 }
 
-// Color index per arrow, avoiding the colors of touching arrows where possible.
-function assignColors(cellsList, cube, rng) {
-  const grid = new Int16Array(cube.count).fill(-1);
-  cellsList.forEach((cells, id) => { for (const c of cells) grid[c] = id; });
-  const neighbors = cellsList.map(() => new Set());
-  cellsList.forEach((cells, id) => {
-    for (const c of cells) {
-      for (const d of cube.tangents[cube.faceOf(c)]) {
-        const o = grid[cube.step(c, d).cell];
-        if (o >= 0 && o !== id) neighbors[id].add(o);
-      }
-    }
-  });
-  const colors = new Array(cellsList.length).fill(-1);
-  const usage = new Array(PALETTE_SIZE).fill(0);
-  const ids = shuffle(cellsList.map((_, i) => i), rng);
-  for (const id of ids) {
-    const taken = new Set();
-    for (const n of neighbors[id]) if (colors[n] >= 0) taken.add(colors[n]);
-    let best = 0, bestScore = Infinity;
-    for (const c of shuffle(Array.from({ length: PALETTE_SIZE }, (_, i) => i), rng)) {
-      const score = (taken.has(c) ? 1000 : 0) + usage[c];
-      if (score < bestScore) { bestScore = score; best = c; }
-    }
-    colors[id] = best;
-    usage[best]++;
+// Turns some arrows of a finished board two-sided. Giving an arrow a second
+// way out never stops the board being solvable: its usual head still leaves
+// in the placement order. Only arrows of 4+ cells qualify (so each half is
+// easy to tap), and only if the second end's exit path doesn't run into the
+// arrow's own body. Arrows whose second end is blocked at the start come
+// first, so picking the wrong end matters. Two-sided arrows never touch each
+// other, so their matching colors don't run together.
+function pickTwoSided(p, cube, arrows, bridges, rng) {
+  if (!p.twoSidedChance || rng() >= p.twoSidedChance) return;
+  const [lo, hi] = p.twoSided;
+  const want = lo + Math.floor(rng() * (hi - lo + 1));
+  const grid = buildGrid(cube, arrows);
+  const blocked = [], open = [];
+  for (const a of shuffle(arrows.slice(), rng)) {
+    if (a.cells.length < 4) continue;
+    const back = a.cells.slice().reverse();
+    const own = new Set(a.cells);
+    if (exitPath(cube, back, bridges).some((c) => own.has(c))) continue;
+    (scanExit(grid, cube, back, bridges).free ? open : blocked).push(a);
   }
-  return colors;
+  const touches = (a, b) => a.cells.some((c) => cube.tangents[cube.faceOf(c)].some((d) => grid[cube.step(c, d).cell] === b.id));
+  const chosen = [];
+  for (const a of blocked.concat(open)) {
+    if (chosen.length >= want) break;
+    if (!chosen.some((b) => touches(a, b))) chosen.push(a);
+  }
+  for (const a of chosen) a.both = true;
 }
 
+// Arrows that can leave at the start (by either end, for two-sided ones).
 export function countFree(level) {
   const cube = getCube(level.size);
   const grid = buildGrid(cube, level.arrows);
   const bridges = bridgeSet(level);
   let n = 0;
-  for (const a of level.arrows) if (scanExit(grid, cube, a.cells, bridges).free) n++;
+  for (const a of level.arrows) if (canLeave(grid, cube, a, bridges)) n++;
   return n;
 }
 
@@ -377,7 +393,7 @@ export function solveDepth(level) {
   let left = level.arrows.map((a) => a.id);
   let rounds = 0;
   while (left.length) {
-    const free = left.filter((id) => scanExit(grid, cube, level.arrows[id].cells, bridges).free);
+    const free = left.filter((id) => canLeave(grid, cube, level.arrows[id], bridges));
     if (!free.length) return -1;
     for (const id of free) for (const c of level.arrows[id].cells) grid[c] = -1;
     const gone = new Set(free);
@@ -435,12 +451,12 @@ export function generateLevel(difficulty = 'easy', seed = randomSeed()) {
   let best = null, bestScore = null;
   for (let c = 0; c < p.candidates; c++) {
     const cand = buildCandidate(p, cube, rng, bridges);
-    const arrows = cand.placed.map((cells, id) => ({ id, cells, color: 0 }));
+    const arrows = cand.placed.map((cells, id) => ({ id, cells, both: false }));
     const sc = score(arrows, cand.filled);
     if (!best || beats(sc, bestScore)) { best = arrows; bestScore = sc; }
   }
-  const colors = assignColors(best.map((a) => a.cells), cube, rng);
-  best.forEach((a, i) => { a.color = colors[i]; });
+  // Two-sided arrows also use their own random stream.
+  pickTwoSided(p, cube, best, bridges, createRng(seed ^ 0x51ED270B));
   return {
     difficulty,
     seed,
@@ -464,7 +480,7 @@ export function solve(level) {
   while (left.size) {
     let found = -1;
     for (const id of left) {
-      if (scanExit(grid, cube, level.arrows[id].cells, bridges).free) { found = id; break; }
+      if (canLeave(grid, cube, level.arrows[id], bridges)) { found = id; break; }
     }
     if (found < 0) return null;
     for (const c of level.arrows[found].cells) grid[c] = -1;
@@ -499,11 +515,13 @@ export function validateLevel(level) {
       if (k > 0 && ok && !adjacent(cube, a.cells[k - 1], c)) errs.push(`arrow ${i}: cells ${k - 1} and ${k} not adjacent`);
     });
     if (!ok) return;
+    if (a.both !== undefined && typeof a.both !== 'boolean') errs.push(`arrow ${i}: both is not true or false`);
     const own = new Set(a.cells);
-    for (const c of exitPath(cube, a.cells, bridges)) {
-      if (own.has(c)) { errs.push(`arrow ${i}: exit path crosses its own body`); break; }
+    for (const e of endsOf(a)) {
+      if (exitPath(cube, endCells(a, e), bridges).some((c) => own.has(c))) {
+        errs.push(`arrow ${i}: exit path${e ? ' from its second end' : ''} crosses its own body`);
+      }
     }
-    if (!Number.isInteger(a.color) || a.color < 0 || a.color >= PALETTE_SIZE) errs.push(`arrow ${i}: bad color`);
   });
   if (level.solution) {
     const ids = level.solution.slice().sort((p, q) => p - q);
@@ -540,29 +558,41 @@ export class Game {
     return this.grid[cell];
   }
 
-  check(id) { return scanExit(this.grid, this.cube, this.arrow(id).cells, this.bridges); }
+  // The exit scan for one end of an arrow (0 = usual head, 1 = the other
+  // end of a two-sided arrow; regular arrows always use end 0).
+  check(id, end = 0) {
+    const a = this.arrow(id);
+    return scanExit(this.grid, this.cube, endCells(a, a.both ? end : 0), this.bridges);
+  }
+
+  // The ends this arrow can leave by right now ([] if it is stuck).
+  freeEnds(id) {
+    return endsOf(this.arrow(id)).filter((e) => this.check(id, e).free);
+  }
 
   freeArrows() {
     const out = [];
-    for (const id of this.alive) if (this.check(id).free) out.push(id);
+    for (const id of this.alive) if (this.freeEnds(id).length) out.push(id);
     return out;
   }
 
-  // Returns { type: 'exit', id, steps } or { type: 'bump', id, steps, blocker }, or null if ignored.
-  tap(id) {
+  // Sends the arrow out by `end`. Returns { type: 'exit', id, end, steps } or
+  // { type: 'bump', id, end, steps, blocker }, or null if ignored.
+  tap(id, end = 0) {
     if (this.status !== 'playing' || !this.alive.has(id)) return null;
+    if (!this.arrow(id).both) end = 0;
     this.moves++;
-    const r = this.check(id);
+    const r = this.check(id, end);
     if (r.free) {
       for (const c of this.arrow(id).cells) this.grid[c] = -1;
       this.alive.delete(id);
       if (!this.alive.size) this.status = 'won';
-      return { type: 'exit', id, steps: r.steps };
+      return { type: 'exit', id, end, steps: r.steps };
     }
     this.hearts--;
     this.mistakes++;
     if (this.hearts <= 0) this.status = 'lost';
-    return { type: 'bump', id, steps: r.steps, blocker: r.blocker };
+    return { type: 'bump', id, end, steps: r.steps, blocker: r.blocker };
   }
 
   // Spends a hint and returns an arrow that can exit now, or -1.

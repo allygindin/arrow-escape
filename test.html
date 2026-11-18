@@ -36,7 +36,7 @@
     <table>
       <thead><tr>
         <th>Difficulty</th><th>Levels</th><th>Valid</th><th>Solvable</th><th>Solution replays</th><th>Same seed, same board</th>
-        <th>With bridges</th><th>Bridge crossed</th><th>Arrows avg (min–max)</th><th>Board filled</th><th>Free at start avg (min–max)</th><th>ms / level</th>
+        <th>With bridges</th><th>Bridge crossed</th><th>With two-sided</th><th>Two-sided avg</th><th>An end blocked</th><th>Arrows avg (min–max)</th><th>Board filled</th><th>Free at start avg (min–max)</th><th>ms / level</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -50,7 +50,7 @@
 // ?n=20 sets how many levels to test per difficulty.
 const qn = new URLSearchParams(location.search).get('n');
 if (qn) document.querySelector('#count').value = qn;
-import { DIFFICULTIES, DIFFICULTY_ORDER, Game, bridgeSet, countFree, exitPath, exitRoute, generateLevel, getCube, headDirection, solve, usesBridge, validateLevel } from './js/logic.js';
+import { DIFFICULTIES, DIFFICULTY_ORDER, Game, buildGrid, bridgeSet, countFree, endCells, exitPath, exitRoute, generateLevel, getCube, headDirection, scanExit, solve, usesBridge, validateLevel } from './js/logic.js';
 
 const $ = (s) => document.querySelector(s);
 const failures = [];
@@ -144,13 +144,39 @@ function unitTests() {
   const selfCross = { size: 4, bridges: [[0, 4], [0, 5], [1, 5]], arrows: [{ id: 0, cells: [cube.step(at(4, 0, 0), 1).cell, at(4, 0, 0)], color: 0 }] };
   check('An exit path that comes round onto its own body is rejected', validateLevel(selfCross).some((m) => m.includes('own body')));
 
+  // Two-sided arrows. Arrow 0 lies along row 1 of face 4 with heads at both
+  // ends. Arrow 1 bends over the +u edge and points -u, straight at arrow 0's
+  // usual head, so each blocks the other's usual way out. Only arrow 0's
+  // second end (pointing -u, off the face) is free.
+  const facing = { size: 4, arrows: [
+    { id: 0, cells: [at(4, 0, 1), at(4, 1, 1), at(4, 2, 1)], both: true },
+    { id: 1, cells: [cube.step(at(4, 3, 1), 0).cell, at(4, 3, 1)], both: false },
+  ] };
+  check('A two-sided arrow is a valid arrow', validateLevel(facing).length === 0);
+  const ts = new Game(facing);
+  check('Only the open end of a two-sided arrow counts as free', JSON.stringify(ts.freeEnds(0)) === '[1]' && JSON.stringify(ts.freeArrows()) === '[0]');
+  check('Its second end counts for free-at-start and the solver', countFree(facing) === 1 && JSON.stringify(solve(facing)) === '[0,1]');
+  check('Without its second end the same board is stuck', solve({ size: 4, arrows: [{ ...facing.arrows[0], both: false }, facing.arrows[1]] }) === null);
+  const tsb = ts.tap(0, 0);
+  check('Tapping the blocked half bumps and costs a heart', tsb.type === 'bump' && tsb.end === 0 && tsb.blocker === 1 && ts.hearts === 2);
+  check('Hint picks the two-sided arrow', ts.hint() === 0);
+  const tse = ts.tap(0, 1);
+  check('Tapping the open half sends it out that end', tse.type === 'exit' && tse.end === 1 && tse.steps === 0);
+  check('That frees the arrow it was blocking', ts.tap(1).type === 'exit' && ts.status === 'won');
+  const reg = new Game(facing).tap(1, 1);
+  check('A regular arrow ignores the end and leaves by its head', reg.type === 'bump' && reg.end === 0 && reg.blocker === 0);
+  // A hook whose first cell points back into its own body.
+  const hook = { size: 4, arrows: [{ id: 0, both: true, cells: [at(4, 1, 1), at(4, 1, 0), at(4, 2, 0), at(4, 2, 1), at(4, 2, 2), at(4, 1, 2)] }] };
+  check('A hook is fine as a regular arrow', validateLevel({ size: 4, arrows: [{ ...hook.arrows[0], both: false }] }).length === 0);
+  check('A second end whose exit path runs into its own body is rejected', validateLevel(hook).some((m) => m.includes('second end')));
+
   $('#units').innerHTML = out.map((t) => `<div class="${t.ok ? 'ok' : 'bad'}">${t.ok ? '✓' : '✗'} ${t.name}</div>`).join('');
   return out.every((t) => t.ok);
 }
 
 function testDifficulty(diff, n, baseSeed) {
   const s = { levels: n, valid: 0, solvable: 0, replays: 0, deterministic: 0, detChecked: 0,
-    bridged: 0, crossed: 0, arrows: [], fill: 0, free: [], ms: 0 };
+    bridged: 0, crossed: 0, twoLevels: 0, twoArrows: 0, twoBlocked: 0, arrows: [], fill: 0, free: [], ms: 0 };
   const cells = 6 * DIFFICULTIES[diff].size ** 2;
   for (let i = 0; i < n; i++) {
     const seed = (baseSeed + i * 2654435761) >>> 0;
@@ -183,6 +209,13 @@ function testDifficulty(diff, n, baseSeed) {
       const cube = getCube(level.size), bs = bridgeSet(level);
       if (level.arrows.some((a) => usesBridge(cube, a.cells, bs))) s.crossed++;
     }
+    const two = level.arrows.filter((a) => a.both);
+    if (two.length) {
+      s.twoLevels++;
+      s.twoArrows += two.length;
+      const cube = getCube(level.size), grid = buildGrid(cube, level.arrows), bs = bridgeSet(level);
+      if (two.some((a) => [0, 1].some((e) => !scanExit(grid, cube, endCells(a, e), bs).free))) s.twoBlocked++;
+    }
     s.arrows.push(level.arrows.length);
     s.fill += level.arrows.reduce((sum, a) => sum + a.cells.length, 0) / cells;
     s.free.push(countFree(level));
@@ -212,6 +245,7 @@ function run() {
         <td>${DIFFICULTIES[diff].label} (6 × ${DIFFICULTIES[diff].size}×${DIFFICULTIES[diff].size})</td><td>${n}</td>
         ${cell(s.valid, n)}${cell(s.solvable, n)}${cell(s.replays, n)}${cell(s.deterministic, s.detChecked)}
         <td>${s.bridged}</td><td>${s.crossed}/${s.bridged}</td>
+        <td>${s.twoLevels}</td><td>${s.twoLevels ? (s.twoArrows / s.twoLevels).toFixed(1) : '–'}</td><td>${s.twoBlocked}/${s.twoLevels}</td>
         <td>${avg(s.arrows).toFixed(1)} (${Math.min(...s.arrows)}–${Math.max(...s.arrows)})</td>
         <td>${Math.round((s.fill / n) * 100)}%</td>
         <td>${avg(s.free).toFixed(1)} (${Math.min(...s.free)}–${Math.max(...s.free)})</td>

@@ -72,19 +72,20 @@ function newLevel(diff = store.difficulty) {
 
 function retry() { startGame(level); }
 
-function play(id) {
+// end: which end a two-sided arrow leaves by (0 for regular arrows).
+function play(id, end) {
   if (renderer.isAnimating(id)) return;
   const g = game;
-  const res = g.tap(id);
+  const res = g.tap(id, end);
   if (!res) return;
   if (res.type === 'exit') {
     if (id === hintId) hintId = -1;
     if (g.status === 'won') { timerStop(); recordResult(true); }
-    renderer.exit(id, () => { if (g === game && g.status === 'won') showWin(); });
+    renderer.exit(id, res.end, () => { if (g === game && g.status === 'won') showWin(); });
   } else {
     if (g.status === 'lost') { timerStop(); recordResult(false); }
     popHeart(g.hearts);
-    renderer.bump(id, res.steps, res.blocker, () => { if (g === game && g.status === 'lost') showLose(); });
+    renderer.bump(id, res.end, res.steps, res.blocker, () => { if (g === game && g.status === 'lost') showLose(); });
   }
   updateHud();
 }
@@ -107,13 +108,20 @@ function recordResult(won) {
   lastResult = { ms, newBest };
 }
 
+// Lights up the hinted arrow. For a two-sided arrow with only one way out,
+// only the half that can leave glows.
+function showHint(id) {
+  const ends = game.freeEnds(id);
+  renderer.setHint(id, ends.length === 1 ? ends[0] : -1);
+}
+
 function useHint() {
   if (!game || game.status !== 'playing') return;
-  if (hintId >= 0 && game.alive.has(hintId)) { renderer.setHint(hintId); return; } // still showing: free
+  if (hintId >= 0 && game.alive.has(hintId)) { showHint(hintId); return; } // still showing: free
   const id = game.hint();
   if (id < 0) return;
   hintId = id;
-  renderer.setHint(id);
+  showHint(id);
   updateHud();
 }
 
@@ -213,7 +221,7 @@ canvas.addEventListener('pointerdown', (e) => {
   pointers.set(e.pointerId, local(e));
   if (pointers.size === 1) {
     down = { pointer: e.pointerId, x: e.clientX, y: e.clientY, dragging: false,
-             arrow: game.status === 'playing' ? renderer.hitTest(e.clientX, e.clientY) : -1 };
+             hit: game.status === 'playing' ? renderer.hitTest(e.clientX, e.clientY) : null };
   } else {
     down = null;
     if (pointers.size === 2) pinch = pinchState();
@@ -251,7 +259,7 @@ function release(e, cancelled) {
   if (!d || d.pointer !== e.pointerId) return;
   down = null;
   if (cancelled || d.dragging) return;
-  if (d.arrow >= 0) play(d.arrow);
+  if (d.hit && d.hit.id >= 0) play(d.hit.id, d.hit.end);
 }
 canvas.addEventListener('pointerup', (e) => release(e, false));
 canvas.addEventListener('pointercancel', (e) => release(e, true));
@@ -274,7 +282,8 @@ renderer.onView = updateZoomButtons;
 // Apple Pencil hover (and mouse, for testing on a computer): highlight + exit preview.
 canvas.addEventListener('pointermove', (e) => {
   if ((e.pointerType === 'pen' || e.pointerType === 'mouse') && e.buttons === 0) {
-    renderer.setHover(game && game.status === 'playing' ? renderer.hitTest(e.clientX, e.clientY) : -1);
+    const hit = game && game.status === 'playing' ? renderer.hitTest(e.clientX, e.clientY) : null;
+    renderer.setHover(hit ? hit.id : -1, hit ? hit.end : 0);
   }
 });
 canvas.addEventListener('pointerleave', () => renderer.setHover(-1));
